@@ -58,6 +58,7 @@ bool init_network(NNNetwork *network, unsigned layers_length,
   }
   NNLayer *layers = malloc((layers_length - 1) * sizeof(NNLayer));
   if (layers == NULL) {
+    free(memory);
     return false;
   }
 
