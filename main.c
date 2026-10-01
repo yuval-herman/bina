@@ -140,9 +140,9 @@ void test_neuron() {
 
   bias = NAN;
   ret = feed_neuron(ARR_LENGTH(inputs), inputs, weights, bias);
-  TEST_FLOAT(ret, NAN);
   // should be 0 but just because of activation
   // function. Otherwise we had 2*-2+2*-2+1 = -7
+  TEST_FLOAT(ret, NAN);
 }
 
 void test_layer() {
