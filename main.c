@@ -383,24 +383,56 @@ void test_layer() {
 }
 
 void test_network() {
-  NNNetwork network = {0};
-  init_network(&network, 3, (unsigned[]){2, 3, 1});
+  {
+    NNNetwork network = {0};
+    init_network(&network, 3, (unsigned[]){2, 3, 1});
 
-  NNtype inputs[2] = {-0.5, 2};
+    NNtype inputs[2] = {-0.5, 2};
 
-  memcpy(network.layers[0].biases, (NNtype[3]){1, 2, 3}, 3 * sizeof(NNtype));
-  memcpy(network.layers[1].biases, (NNtype[1]){4}, 1 * sizeof(NNtype));
+    memcpy(network.layers[0].biases, (NNtype[3]){1, 2, 3}, 3 * sizeof(NNtype));
+    memcpy(network.layers[1].biases, (NNtype[1]){4}, 1 * sizeof(NNtype));
 
-  memcpy(network.layers[0].weights, (NNtype[2 * 3]){6, 5, 4, 3, 2, 1},
-         2 * 3 * sizeof(NNtype));
-  memcpy(network.layers[1].weights, (NNtype[3 * 1]){0.5, 0.5, 0.5},
-         3 * 1 * sizeof(NNtype));
+    memcpy(network.layers[0].weights, (NNtype[2 * 3]){6, 5, 4, 3, 2, 1},
+           2 * 3 * sizeof(NNtype));
+    memcpy(network.layers[1].weights, (NNtype[3 * 1]){0.5, 0.5, 0.5},
+           3 * 1 * sizeof(NNtype));
 
-  feed_network(&network, inputs);
+    feed_network(&network, inputs);
 
-  TEST_FLOAT(network.final_output[0], 13.0f);
+    TEST_FLOAT(network.final_output[0], 13.0f);
 
-  free_network(&network);
+    free_network(&network);
+  }
+  {
+    NNNetwork network = {0};
+    init_network(&network, 3, (unsigned[]){2, 2, 1});
+
+    struct {
+      NNtype inputs[2];
+      NNtype output;
+    } xor_test[4] = {
+        {{0, 0}, 0},
+        {{0, 1}, 1},
+        {{1, 0}, 1},
+        {{1, 1}, 0},
+    };
+
+    memcpy(network.layers[0].biases, (NNtype[2]){0, 0}, 2 * sizeof(NNtype));
+    memcpy(network.layers[1].biases, (NNtype[1]){0}, 1 * sizeof(NNtype));
+
+    memcpy(network.layers[0].weights, (NNtype[2 * 2]){-1, 1, 1, -1},
+           2 * 2 * sizeof(NNtype));
+    memcpy(network.layers[1].weights, (NNtype[2 * 1]){1, 1},
+           2 * 1 * sizeof(NNtype));
+
+    for (unsigned i = 0; i < ARR_LENGTH(xor_test); i++) {
+      feed_network(&network, xor_test[i].inputs);
+
+      TEST_FLOAT(network.final_output[0], xor_test[i].output);
+    }
+
+    free_network(&network);
+  }
 }
 
 int main(void) {
