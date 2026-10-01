@@ -3,6 +3,7 @@
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 #define ANSI_RED "\033[31m"
 #define ANSI_GREEN "\033[32m"
@@ -382,180 +383,24 @@ void test_layer() {
 }
 
 void test_network() {
-  {
-    NNNetwork network = {0};
-    init_network(&network, 2, (unsigned[]){2, 3});
-    NNLayer layer = network.layers[0];
+  NNNetwork network = {0};
+  init_network(&network, 3, (unsigned[]){2, 3, 1});
 
-    for (unsigned i = 0; i < layer.output_length * layer.input_length; i++) {
-      layer.weights[i] = 1;
-    }
+  NNtype inputs[2] = {-0.5, 2};
 
-    for (unsigned i = 0; i < layer.output_length; i++) {
-      layer.biases[i] = 1;
-    }
+  memcpy(network.layers[0].biases, (NNtype[3]){1, 2, 3}, 3 * sizeof(NNtype));
+  memcpy(network.layers[1].biases, (NNtype[1]){4}, 1 * sizeof(NNtype));
 
-    NNtype inputs[] = {1, 1};
-    assert(ARR_LENGTH(inputs) == layer.input_length);
+  memcpy(network.layers[0].weights, (NNtype[2 * 3]){6, 5, 4, 3, 2, 1},
+         2 * 3 * sizeof(NNtype));
+  memcpy(network.layers[1].weights, (NNtype[3 * 1]){0.5, 0.5, 0.5},
+         3 * 1 * sizeof(NNtype));
 
-    feed_layer(&layer, inputs);
-    TEST_FLOAT(layer.outputs[0], 3.0f);
-    TEST_FLOAT(layer.outputs[1], 3.0f);
-    TEST_FLOAT(layer.outputs[2], 3.0f);
+  feed_network(&network, inputs);
 
-    for (unsigned i = 0; i < layer.output_length * layer.input_length; i++) {
-      layer.weights[i] = 2;
-    }
+  TEST_FLOAT(network.final_output[0], 13.0f);
 
-    feed_layer(&layer, inputs);
-    TEST_FLOAT(layer.outputs[0], 5.0f);
-    TEST_FLOAT(layer.outputs[1], 5.0f);
-    TEST_FLOAT(layer.outputs[2], 5.0f);
-
-    for (unsigned i = 0; i < layer.output_length; i++) {
-      layer.biases[i] = 2;
-    }
-
-    feed_layer(&layer, inputs);
-    TEST_FLOAT(layer.outputs[0], 6.0f);
-    TEST_FLOAT(layer.outputs[1], 6.0f);
-    TEST_FLOAT(layer.outputs[2], 6.0f);
-
-    for (unsigned i = 0; i < layer.output_length * layer.input_length; i++) {
-      layer.weights[i] = (float)i;
-    }
-
-    for (unsigned i = 0; i < layer.output_length; i++) {
-      layer.biases[i] = (float)layer.output_length - (float)i;
-    }
-
-    for (unsigned i = 0; i < ARR_LENGTH(inputs); i++) {
-      inputs[i] = (float)i;
-    }
-
-    feed_layer(&layer, inputs);
-    TEST_FLOAT(layer.outputs[0], 4.0f);
-    TEST_FLOAT(layer.outputs[1], 5.0f);
-    TEST_FLOAT(layer.outputs[2], 6.0f);
-
-    free_network(&network);
-  }
-  {
-    NNNetwork network = {0};
-    init_network(&network, 2, (unsigned[]){3, 3});
-    NNLayer layer = network.layers[0];
-
-    for (unsigned i = 0; i < layer.output_length * layer.input_length; i++) {
-      layer.weights[i] = 1;
-    }
-
-    for (unsigned i = 0; i < layer.output_length; i++) {
-      layer.biases[i] = 1;
-    }
-
-    NNtype inputs[] = {1, 1, 1};
-    assert(ARR_LENGTH(inputs) == layer.input_length);
-
-    feed_layer(&layer, inputs);
-    TEST_FLOAT(layer.outputs[0], 4.0f);
-    TEST_FLOAT(layer.outputs[1], 4.0f);
-    TEST_FLOAT(layer.outputs[2], 4.0f);
-
-    for (unsigned i = 0; i < layer.output_length * layer.input_length; i++) {
-      layer.weights[i] = (float)i;
-    }
-
-    for (unsigned i = 0; i < layer.output_length; i++) {
-      layer.biases[i] = (float)layer.output_length - (float)i;
-    }
-
-    for (unsigned i = 0; i < ARR_LENGTH(inputs); i++) {
-      inputs[i] = (float)i;
-    }
-
-    feed_layer(&layer, inputs);
-    TEST_FLOAT(layer.outputs[0], 8.0f);
-    TEST_FLOAT(layer.outputs[1], 16.0f);
-    TEST_FLOAT(layer.outputs[2], 24.0f);
-
-    free_network(&network);
-  }
-  {
-    NNNetwork network = {0};
-    init_network(&network, 2, (unsigned[]){3, 2});
-    NNLayer layer = network.layers[0];
-
-    for (unsigned i = 0; i < layer.output_length * layer.input_length; i++) {
-      layer.weights[i] = 1;
-    }
-
-    for (unsigned i = 0; i < layer.output_length; i++) {
-      layer.biases[i] = 1;
-    }
-
-    NNtype inputs[] = {1, 1, 1};
-    assert(ARR_LENGTH(inputs) == layer.input_length);
-
-    feed_layer(&layer, inputs);
-    TEST_FLOAT(layer.outputs[0], 4.0f);
-    TEST_FLOAT(layer.outputs[1], 4.0f);
-
-    for (unsigned i = 0; i < layer.output_length * layer.input_length; i++) {
-      layer.weights[i] = (float)i;
-    }
-
-    for (unsigned i = 0; i < layer.output_length; i++) {
-      layer.biases[i] = (float)layer.output_length - (float)i;
-    }
-
-    for (unsigned i = 0; i < ARR_LENGTH(inputs); i++) {
-      inputs[i] = (float)i;
-    }
-
-    feed_layer(&layer, inputs);
-    TEST_FLOAT(layer.outputs[0], 7.0f);
-    TEST_FLOAT(layer.outputs[1], 15.0f);
-
-    free_network(&network);
-  }
-  {
-    NNNetwork network = {0};
-    init_network(&network, 2, (unsigned[]){3, 2});
-    NNLayer layer = network.layers[0];
-
-    for (unsigned i = 0; i < layer.output_length * layer.input_length; i++) {
-      layer.weights[i] = -1;
-    }
-
-    for (unsigned i = 0; i < layer.output_length; i++) {
-      layer.biases[i] = 1;
-    }
-
-    NNtype inputs[] = {1, 1, 1};
-    assert(ARR_LENGTH(inputs) == layer.input_length);
-
-    feed_layer(&layer, inputs);
-    TEST_FLOAT(layer.outputs[0], 0.0f);
-    TEST_FLOAT(layer.outputs[1], 0.0f);
-
-    for (unsigned i = 0; i < layer.output_length * layer.input_length; i++) {
-      layer.weights[i] = (float)i;
-    }
-
-    for (unsigned i = 0; i < layer.output_length; i++) {
-      layer.biases[i] = (float)layer.output_length - (float)i;
-    }
-
-    for (unsigned i = 0; i < ARR_LENGTH(inputs); i++) {
-      inputs[i] = (float)i - 1.5f;
-    }
-
-    feed_layer(&layer, inputs);
-    TEST_FLOAT(layer.outputs[0], 2.5f);
-    TEST_FLOAT(layer.outputs[1], 0.0f);
-
-    free_network(&network);
-  }
+  free_network(&network);
 }
 
 int main(void) {
