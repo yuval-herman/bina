@@ -138,5 +138,15 @@ void test_neuron() {
 int main(void) {
   NNLayer layer = {0};
   init_layer(&layer, 2, 3);
+
+  NNtype inputs[2] = {1, 1};
+  NNtype expected_outputs[2] = {1, 1};
+
+  feed_layer(&layer, inputs);
+
+  for (unsigned i = 0; i < ARR_LENGTH(inputs); i++) {
+    TEST_FLOAT(layer.outputs[i], expected_outputs[i]);
+  }
+
   free_layer(&layer);
 }
