@@ -23,7 +23,7 @@ typedef struct {
 
 static inline NNtype *get_weight(NNLayer *layer, unsigned output_idx,
                                  unsigned weight_idx) {
-  return layer->weights + output_idx * (layer->output_length - 1) + weight_idx;
+  return layer->weights + output_idx * layer->input_length + weight_idx;
 }
 
 bool init_layer(NNLayer *layer, unsigned input_length, unsigned output_length) {
@@ -276,6 +276,43 @@ void test_layer() {
     feed_layer(&layer, inputs);
     TEST_FLOAT(layer.outputs[0], 7.0f);
     TEST_FLOAT(layer.outputs[1], 15.0f);
+
+    free_layer(&layer);
+  }
+  {
+    NNLayer layer = {0};
+    init_layer(&layer, 3, 2);
+
+    for (unsigned i = 0; i < layer.output_length * layer.input_length; i++) {
+      layer.weights[i] = -1;
+    }
+
+    for (unsigned i = 0; i < layer.output_length; i++) {
+      layer.biases[i] = 1;
+    }
+
+    NNtype inputs[] = {1, 1, 1};
+    assert(ARR_LENGTH(inputs) == layer.input_length);
+
+    feed_layer(&layer, inputs);
+    TEST_FLOAT(layer.outputs[0], 0.0f);
+    TEST_FLOAT(layer.outputs[1], 0.0f);
+
+    for (unsigned i = 0; i < layer.output_length * layer.input_length; i++) {
+      layer.weights[i] = (float)i;
+    }
+
+    for (unsigned i = 0; i < layer.output_length; i++) {
+      layer.biases[i] = (float)layer.output_length - (float)i;
+    }
+
+    for (unsigned i = 0; i < ARR_LENGTH(inputs); i++) {
+      inputs[i] = (float)i - 1.5;
+    }
+
+    feed_layer(&layer, inputs);
+    TEST_FLOAT(layer.outputs[0], 2.5f);
+    TEST_FLOAT(layer.outputs[1], 0.0f);
 
     free_layer(&layer);
   }
