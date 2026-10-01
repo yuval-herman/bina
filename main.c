@@ -58,9 +58,7 @@ void free_layer(NNLayer *layer) {
 bool float_equals(NNtype a, NNtype b) { return fabs(a - b) < 1e-6; }
 
 // ReLU
-static inline NNtype activation(NNtype value) {
-  return isfinite(value) ? value > 0 ? value : 0 : NAN;
-}
+static inline NNtype activation(NNtype value) { return value <= 0 ? 0 : value; }
 
 NNtype feed_neuron(unsigned input_length, const NNtype *inputs,
                    const NNtype *weights, NNtype bias) {
@@ -136,6 +134,8 @@ void test_neuron() {
 }
 
 int main(void) {
+  test_neuron();
+
   NNLayer layer = {0};
   init_layer(&layer, 2, 3);
 
