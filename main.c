@@ -4,6 +4,10 @@
 #include <stdio.h>
 #include <stdlib.h>
 
+#define ANSI_RED "\033[31m"
+#define ANSI_GREEN "\033[32m"
+#define ANSI_RESET "\033[0m"
+
 #define ARR_LENGTH(arr) (sizeof(arr) / sizeof(arr[0]))
 
 // Our float type, can be changed to double or whatever
@@ -95,9 +99,11 @@ void feed_layer(NNLayer *layer, const NNtype *inputs) {
 #define TEST_FLOAT(got, expected)                                              \
   do {                                                                         \
     if ((isnan(got) && isnan(expected)) || float_equals(got, expected))        \
-      printf("Got %g which is correct\n", got);                                \
+      printf(ANSI_GREEN "Got %g which is correct\n" ANSI_RESET, got);          \
     else                                                                       \
-      printf("Got incorrect value! expected %g but got %g\n", expected, got);  \
+      printf(ANSI_RED                                                          \
+             "Got incorrect value! expected %g but got %g\n" ANSI_RESET,       \
+             expected, got);                                                   \
   } while (0)
 
 void test_neuron() {
