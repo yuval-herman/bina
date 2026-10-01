@@ -45,7 +45,7 @@ bool init_network(NNNetwork *network, unsigned layers_length,
   size_t memory_length = 0;
   for (unsigned i = 0; i < layers_length - 1; i++) {
     unsigned input_length = layers_neurons[i];
-    unsigned output_length = layers_neurons[i];
+    unsigned output_length = layers_neurons[i + 1];
     size_t weights_length = input_length * output_length;
 
     // biases == output => biases + output = output*2
@@ -69,7 +69,7 @@ bool init_network(NNNetwork *network, unsigned layers_length,
   for (unsigned i = 0; i < layers_length - 1; i++) {
     NNLayer *layer = layers + i;
     unsigned input_length = layers_neurons[i];
-    unsigned output_length = layers_neurons[i];
+    unsigned output_length = layers_neurons[i + 1];
     size_t weights_length = input_length * output_length;
 
     layer->input_length = input_length;
@@ -92,40 +92,6 @@ void free_network(NNNetwork *network) {
   free(network->layers);
   free(network->memory_start);
   *network = (NNNetwork){0};
-}
-
-bool test_init_layer(NNLayer *layer, unsigned input_length,
-                     unsigned output_length) {
-  layer->input_length = input_length;
-  layer->output_length = output_length;
-
-  size_t weights_length = input_length * output_length;
-  // biases == output => biases + output = output*2
-  NNtype *memory =
-      malloc((weights_length + output_length * 2) * sizeof(NNtype));
-
-  if (memory == NULL) {
-    return false;
-  }
-
-  layer->weights = memory;
-  memory += weights_length;
-
-  layer->biases = memory;
-  memory += output_length;
-
-  layer->outputs = memory;
-  memory += output_length;
-
-  return true;
-}
-
-void test_free_layer(NNLayer *layer) {
-  // Only one free since we use only one malloc
-  free(layer->weights);
-  layer->weights = NULL;
-  layer->biases = NULL;
-  layer->outputs = NULL;
 }
 
 // Check if two float are "close enough" to be considered equal
@@ -216,8 +182,9 @@ void test_neuron() {
 
 void test_network() {
   {
-    NNLayer layer = {0};
-    test_init_layer(&layer, 2, 3);
+    NNNetwork network = {0};
+    init_network(&network, 2, (unsigned[]){2, 3});
+    NNLayer layer = network.layers[0];
 
     for (unsigned i = 0; i < layer.output_length * layer.input_length; i++) {
       layer.weights[i] = 1;
@@ -270,11 +237,12 @@ void test_network() {
     TEST_FLOAT(layer.outputs[1], 5.0f);
     TEST_FLOAT(layer.outputs[2], 6.0f);
 
-    test_free_layer(&layer);
+    free_network(&network);
   }
   {
-    NNLayer layer = {0};
-    test_init_layer(&layer, 3, 3);
+    NNNetwork network = {0};
+    init_network(&network, 2, (unsigned[]){3, 3});
+    NNLayer layer = network.layers[0];
 
     for (unsigned i = 0; i < layer.output_length * layer.input_length; i++) {
       layer.weights[i] = 1;
@@ -309,11 +277,12 @@ void test_network() {
     TEST_FLOAT(layer.outputs[1], 16.0f);
     TEST_FLOAT(layer.outputs[2], 24.0f);
 
-    test_free_layer(&layer);
+    free_network(&network);
   }
   {
-    NNLayer layer = {0};
-    test_init_layer(&layer, 3, 2);
+    NNNetwork network = {0};
+    init_network(&network, 2, (unsigned[]){3, 2});
+    NNLayer layer = network.layers[0];
 
     for (unsigned i = 0; i < layer.output_length * layer.input_length; i++) {
       layer.weights[i] = 1;
@@ -346,11 +315,12 @@ void test_network() {
     TEST_FLOAT(layer.outputs[0], 7.0f);
     TEST_FLOAT(layer.outputs[1], 15.0f);
 
-    test_free_layer(&layer);
+    free_network(&network);
   }
   {
-    NNLayer layer = {0};
-    test_init_layer(&layer, 3, 2);
+    NNNetwork network = {0};
+    init_network(&network, 2, (unsigned[]){3, 2});
+    NNLayer layer = network.layers[0];
 
     for (unsigned i = 0; i < layer.output_length * layer.input_length; i++) {
       layer.weights[i] = -1;
@@ -383,7 +353,7 @@ void test_network() {
     TEST_FLOAT(layer.outputs[0], 2.5f);
     TEST_FLOAT(layer.outputs[1], 0.0f);
 
-    test_free_layer(&layer);
+    free_network(&network);
   }
 }
 
