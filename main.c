@@ -58,7 +58,11 @@ void free_layer(NNLayer *layer) {
 bool float_equals(NNtype a, NNtype b) { return fabs(a - b) < 1e-6; }
 
 // ReLU
-static inline NNtype activation(NNtype value) { return value <= 0 ? 0 : value; }
+static inline NNtype activation(NNtype value) {
+  // The check is made in such a way that NaN values would progagte through here
+  // and not turn into zeros.
+  return value <= 0 ? 0 : value;
+}
 
 NNtype feed_neuron(unsigned input_length, const NNtype *inputs,
                    const NNtype *weights, NNtype bias) {
