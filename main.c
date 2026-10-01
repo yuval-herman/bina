@@ -307,7 +307,7 @@ void test_layer() {
     }
 
     for (unsigned i = 0; i < ARR_LENGTH(inputs); i++) {
-      inputs[i] = (float)i - 1.5;
+      inputs[i] = (float)i - 1.5f;
     }
 
     feed_layer(&layer, inputs);
@@ -320,6 +320,5 @@ void test_layer() {
 
 int main(void) {
   test_neuron();
-
   test_layer();
 }
