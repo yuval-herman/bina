@@ -89,6 +89,9 @@ bool init_network(NNNetwork *network, unsigned layers_length,
     memory += output_length;
   }
 
+  network->final_output = network->layers[network->layers_length - 1].outputs;
+  network->final_output_length =
+      network->layers[network->layers_length - 1].output_length;
   return true;
 }
 
@@ -151,9 +154,6 @@ void feed_network(NNNetwork *network, const NNtype *inputs) {
     feed_layer(network->layers + layer_idx,
                network->layers[layer_idx - 1].outputs);
   }
-  network->final_output = network->layers[network->layers_length - 1].outputs;
-  network->final_output_length =
-      network->layers[network->layers_length - 1].output_length;
 }
 
 #define TEST_FLOAT(got, expected)                                              \
