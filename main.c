@@ -101,9 +101,9 @@ void feed_layer(NNLayer *layer, const NNtype *inputs) {
     if ((isnan(got) && isnan(expected)) || float_equals(got, expected))        \
       printf(ANSI_GREEN "Got %g which is correct\n" ANSI_RESET, got);          \
     else                                                                       \
-      printf(ANSI_RED                                                          \
-             "Got incorrect value! expected %g but got %g\n" ANSI_RESET,       \
-             expected, got);                                                   \
+      printf(ANSI_RED "Got incorrect value! (line %d) expected %g but got "    \
+                      "%g\n" ANSI_RESET,                                       \
+             __LINE__, expected, got);                                         \
   } while (0)
 
 void test_neuron() {
