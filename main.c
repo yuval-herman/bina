@@ -57,5 +57,16 @@ int main(void) {
   ret = feed_neuron(ARR_LENGTH(inputs), inputs, weights, bias);
   printf("Got: %g\n", ret); // should be 9
 
+  weights[1] = -2;
+
+  ret = feed_neuron(ARR_LENGTH(inputs), inputs, weights, bias);
+  printf("Got: %g\n", ret); // should be 1
+
+  weights[0] = -2;
+
+  ret = feed_neuron(ARR_LENGTH(inputs), inputs, weights, bias);
+  printf("Got: %g\n", ret); // should be 0 but just because of activation
+                            // function. Otherwise we had 2*-2+2*-2+1 = -7
+
   return 0;
 }
