@@ -19,7 +19,7 @@ typedef struct {
 
 static inline NNtype *get_weight(NNLayer *layer, unsigned output_idx,
                                  unsigned weight_idx) {
-  return layer->weights + weight_idx * layer->output_length + output_idx;
+  return layer->weights + output_idx * (layer->output_length - 1) + weight_idx;
 }
 
 bool init_layer(NNLayer *layer, unsigned input_length, unsigned output_length) {
@@ -28,7 +28,8 @@ bool init_layer(NNLayer *layer, unsigned input_length, unsigned output_length) {
 
   size_t weights_length = input_length * output_length;
   // biases == output => biases + output = output*2
-  NNtype *memory = malloc(weights_length + output_length * 2);
+  NNtype *memory =
+      malloc((weights_length + output_length * 2) * sizeof(NNtype));
 
   if (memory == NULL) {
     return false;
@@ -85,8 +86,9 @@ void feed_layer(NNLayer *layer, const NNtype *inputs) {
   assert(inputs);
   for (unsigned output_idx = 0; output_idx < layer->output_length;
        output_idx++) {
-    feed_neuron(layer->input_length, inputs, get_weight(layer, output_idx, 0),
-                layer->biases[output_idx]);
+    layer->outputs[output_idx] = feed_neuron(layer->input_length, inputs,
+                                             get_weight(layer, output_idx, 0),
+                                             layer->biases[output_idx]);
   }
 }
 
@@ -143,14 +145,55 @@ int main(void) {
   NNLayer layer = {0};
   init_layer(&layer, 2, 3);
 
+  for (unsigned i = 0; i < layer.output_length * layer.input_length; i++) {
+    layer.weights[i] = 1;
+  }
+
+  for (unsigned i = 0; i < layer.output_length; i++) {
+    layer.biases[i] = 1;
+  }
+
   NNtype inputs[2] = {1, 1};
-  NNtype expected_outputs[2] = {1, 1};
 
   feed_layer(&layer, inputs);
+  TEST_FLOAT(layer.outputs[0], 3.0f);
+  TEST_FLOAT(layer.outputs[1], 3.0f);
+  TEST_FLOAT(layer.outputs[2], 3.0f);
+
+  for (unsigned i = 0; i < layer.output_length * layer.input_length; i++) {
+    layer.weights[i] = 2;
+  }
+
+  feed_layer(&layer, inputs);
+  TEST_FLOAT(layer.outputs[0], 5.0f);
+  TEST_FLOAT(layer.outputs[1], 5.0f);
+  TEST_FLOAT(layer.outputs[2], 5.0f);
+
+  for (unsigned i = 0; i < layer.output_length; i++) {
+    layer.biases[i] = 2;
+  }
+
+  feed_layer(&layer, inputs);
+  TEST_FLOAT(layer.outputs[0], 6.0f);
+  TEST_FLOAT(layer.outputs[1], 6.0f);
+  TEST_FLOAT(layer.outputs[2], 6.0f);
+
+  for (unsigned i = 0; i < layer.output_length * layer.input_length; i++) {
+    layer.weights[i] = (float)i;
+  }
+
+  for (unsigned i = 0; i < layer.output_length; i++) {
+    layer.biases[i] = (float)layer.output_length - (float)i;
+  }
 
   for (unsigned i = 0; i < ARR_LENGTH(inputs); i++) {
-    TEST_FLOAT(layer.outputs[i], expected_outputs[i]);
+    inputs[i] = (float)i;
   }
+
+  feed_layer(&layer, inputs);
+  TEST_FLOAT(layer.outputs[0], 4.0f);
+  TEST_FLOAT(layer.outputs[1], 5.0f);
+  TEST_FLOAT(layer.outputs[2], 6.0f);
 
   free_layer(&layer);
 }
