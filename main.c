@@ -145,61 +145,144 @@ void test_neuron() {
   // function. Otherwise we had 2*-2+2*-2+1 = -7
 }
 
+void test_layer() {
+  {
+    NNLayer layer = {0};
+    init_layer(&layer, 2, 3);
+
+    for (unsigned i = 0; i < layer.output_length * layer.input_length; i++) {
+      layer.weights[i] = 1;
+    }
+
+    for (unsigned i = 0; i < layer.output_length; i++) {
+      layer.biases[i] = 1;
+    }
+
+    NNtype inputs[] = {1, 1};
+    assert(ARR_LENGTH(inputs) == layer.input_length);
+
+    feed_layer(&layer, inputs);
+    TEST_FLOAT(layer.outputs[0], 3.0f);
+    TEST_FLOAT(layer.outputs[1], 3.0f);
+    TEST_FLOAT(layer.outputs[2], 3.0f);
+
+    for (unsigned i = 0; i < layer.output_length * layer.input_length; i++) {
+      layer.weights[i] = 2;
+    }
+
+    feed_layer(&layer, inputs);
+    TEST_FLOAT(layer.outputs[0], 5.0f);
+    TEST_FLOAT(layer.outputs[1], 5.0f);
+    TEST_FLOAT(layer.outputs[2], 5.0f);
+
+    for (unsigned i = 0; i < layer.output_length; i++) {
+      layer.biases[i] = 2;
+    }
+
+    feed_layer(&layer, inputs);
+    TEST_FLOAT(layer.outputs[0], 6.0f);
+    TEST_FLOAT(layer.outputs[1], 6.0f);
+    TEST_FLOAT(layer.outputs[2], 6.0f);
+
+    for (unsigned i = 0; i < layer.output_length * layer.input_length; i++) {
+      layer.weights[i] = (float)i;
+    }
+
+    for (unsigned i = 0; i < layer.output_length; i++) {
+      layer.biases[i] = (float)layer.output_length - (float)i;
+    }
+
+    for (unsigned i = 0; i < ARR_LENGTH(inputs); i++) {
+      inputs[i] = (float)i;
+    }
+
+    feed_layer(&layer, inputs);
+    TEST_FLOAT(layer.outputs[0], 4.0f);
+    TEST_FLOAT(layer.outputs[1], 5.0f);
+    TEST_FLOAT(layer.outputs[2], 6.0f);
+
+    free_layer(&layer);
+  }
+  {
+    NNLayer layer = {0};
+    init_layer(&layer, 3, 3);
+
+    for (unsigned i = 0; i < layer.output_length * layer.input_length; i++) {
+      layer.weights[i] = 1;
+    }
+
+    for (unsigned i = 0; i < layer.output_length; i++) {
+      layer.biases[i] = 1;
+    }
+
+    NNtype inputs[] = {1, 1, 1};
+    assert(ARR_LENGTH(inputs) == layer.input_length);
+
+    feed_layer(&layer, inputs);
+    TEST_FLOAT(layer.outputs[0], 4.0f);
+    TEST_FLOAT(layer.outputs[1], 4.0f);
+    TEST_FLOAT(layer.outputs[2], 4.0f);
+
+    for (unsigned i = 0; i < layer.output_length * layer.input_length; i++) {
+      layer.weights[i] = (float)i;
+    }
+
+    for (unsigned i = 0; i < layer.output_length; i++) {
+      layer.biases[i] = (float)layer.output_length - (float)i;
+    }
+
+    for (unsigned i = 0; i < ARR_LENGTH(inputs); i++) {
+      inputs[i] = (float)i;
+    }
+
+    feed_layer(&layer, inputs);
+    TEST_FLOAT(layer.outputs[0], 8.0f);
+    TEST_FLOAT(layer.outputs[1], 16.0f);
+    TEST_FLOAT(layer.outputs[2], 24.0f);
+
+    free_layer(&layer);
+  }
+  {
+    NNLayer layer = {0};
+    init_layer(&layer, 3, 2);
+
+    for (unsigned i = 0; i < layer.output_length * layer.input_length; i++) {
+      layer.weights[i] = 1;
+    }
+
+    for (unsigned i = 0; i < layer.output_length; i++) {
+      layer.biases[i] = 1;
+    }
+
+    NNtype inputs[] = {1, 1, 1};
+    assert(ARR_LENGTH(inputs) == layer.input_length);
+
+    feed_layer(&layer, inputs);
+    TEST_FLOAT(layer.outputs[0], 4.0f);
+    TEST_FLOAT(layer.outputs[1], 4.0f);
+
+    for (unsigned i = 0; i < layer.output_length * layer.input_length; i++) {
+      layer.weights[i] = (float)i;
+    }
+
+    for (unsigned i = 0; i < layer.output_length; i++) {
+      layer.biases[i] = (float)layer.output_length - (float)i;
+    }
+
+    for (unsigned i = 0; i < ARR_LENGTH(inputs); i++) {
+      inputs[i] = (float)i;
+    }
+
+    feed_layer(&layer, inputs);
+    TEST_FLOAT(layer.outputs[0], 7.0f);
+    TEST_FLOAT(layer.outputs[1], 15.0f);
+
+    free_layer(&layer);
+  }
+}
+
 int main(void) {
   test_neuron();
 
-  NNLayer layer = {0};
-  init_layer(&layer, 2, 3);
-
-  for (unsigned i = 0; i < layer.output_length * layer.input_length; i++) {
-    layer.weights[i] = 1;
-  }
-
-  for (unsigned i = 0; i < layer.output_length; i++) {
-    layer.biases[i] = 1;
-  }
-
-  NNtype inputs[2] = {1, 1};
-
-  feed_layer(&layer, inputs);
-  TEST_FLOAT(layer.outputs[0], 3.0f);
-  TEST_FLOAT(layer.outputs[1], 3.0f);
-  TEST_FLOAT(layer.outputs[2], 3.0f);
-
-  for (unsigned i = 0; i < layer.output_length * layer.input_length; i++) {
-    layer.weights[i] = 2;
-  }
-
-  feed_layer(&layer, inputs);
-  TEST_FLOAT(layer.outputs[0], 5.0f);
-  TEST_FLOAT(layer.outputs[1], 5.0f);
-  TEST_FLOAT(layer.outputs[2], 5.0f);
-
-  for (unsigned i = 0; i < layer.output_length; i++) {
-    layer.biases[i] = 2;
-  }
-
-  feed_layer(&layer, inputs);
-  TEST_FLOAT(layer.outputs[0], 6.0f);
-  TEST_FLOAT(layer.outputs[1], 6.0f);
-  TEST_FLOAT(layer.outputs[2], 6.0f);
-
-  for (unsigned i = 0; i < layer.output_length * layer.input_length; i++) {
-    layer.weights[i] = (float)i;
-  }
-
-  for (unsigned i = 0; i < layer.output_length; i++) {
-    layer.biases[i] = (float)layer.output_length - (float)i;
-  }
-
-  for (unsigned i = 0; i < ARR_LENGTH(inputs); i++) {
-    inputs[i] = (float)i;
-  }
-
-  feed_layer(&layer, inputs);
-  TEST_FLOAT(layer.outputs[0], 4.0f);
-  TEST_FLOAT(layer.outputs[1], 5.0f);
-  TEST_FLOAT(layer.outputs[2], 6.0f);
-
-  free_layer(&layer);
+  test_layer();
 }
