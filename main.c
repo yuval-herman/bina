@@ -213,6 +213,71 @@ NNtype calculate_loss(unsigned inputs_length, const NNtype *values,
   return loss / (NNtype)inputs_length;
 }
 
+// `inputs` and `expected` are both 2d arrays that are expected to be in
+// contiguous memory.
+NNtype calculate_batch_network_loss(NNNetwork *network, unsigned inputs_length,
+                                    const NNtype *inputs,
+                                    const NNtype *expected) {
+  double avg_loss = 0;
+  for (unsigned i = 0; i < inputs_length; i++) {
+    feed_network(network, &inputs[i * network->layers[0].input_length]);
+    avg_loss += (double)calculate_loss(
+        network->final_output_length, network->final_output,
+        &expected[i * network->final_output_length]);
+  }
+  return (NNtype)avg_loss / (NNtype)inputs_length;
+}
+
+// How should this function handle NaN and infinity cropping up? Abort? This is
+// something that should be thought about.
+// `inputs` and `expected` are both 2d arrays that are expected to be in
+// contiguous memory.
+void calculate_batch_slope(NNTrainer *trainer, unsigned inputs_length,
+                           const NNtype *inputs, const NNtype *expected) {
+  assert(inputs_length && inputs);
+  assert(expected);
+  assert(trainer);
+  NNNetwork *network = trainer->network;
+  assert(network && "trainer must be initialised before training");
+  const NNtype nudge_value = 1e-4f;
+
+  double avg_loss_before =
+      calculate_batch_network_loss(network, inputs_length, inputs, expected);
+
+  for (unsigned layer_idx = 0; layer_idx < network->layers_length;
+       layer_idx++) {
+    const NNLayer layer = network->layers[layer_idx];
+    const unsigned weights_length = layer.input_length * layer.output_length;
+    const unsigned biases_length = layer.output_length;
+    const unsigned layer_length = weights_length + biases_length;
+
+    for (unsigned weight_idx = 0; weight_idx < weights_length; weight_idx++) {
+      NNtype previous_nn_value = layer.weights[weight_idx];
+      layer.weights[weight_idx] += nudge_value;
+
+      double avg_loss_after = calculate_batch_network_loss(
+          network, inputs_length, inputs, expected);
+
+      trainer->slopes[layer_idx * (layer_length) + weight_idx] =
+          (NNtype)(avg_loss_before - avg_loss_after) / nudge_value;
+
+      layer.weights[weight_idx] = previous_nn_value;
+    }
+    for (unsigned bias_idx = 0; bias_idx < layer.output_length; bias_idx++) {
+      NNtype previous_nn_value = layer.biases[bias_idx];
+      layer.biases[bias_idx] += nudge_value;
+
+      double avg_loss_after = calculate_batch_network_loss(
+          network, inputs_length, inputs, expected);
+
+      trainer->slopes[layer_idx * (layer_length) + bias_idx] =
+          (NNtype)(avg_loss_before - avg_loss_after) / nudge_value;
+
+      layer.biases[bias_idx] = previous_nn_value;
+    }
+  }
+}
+
 #define TEST_FLOAT(got, expected)                                              \
   do {                                                                         \
     if ((isnan(got) && isnan(expected)) || float_equals(got, expected))        \
