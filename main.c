@@ -729,18 +729,25 @@ int main(void) {
   NNtype xor_inputs[4][2] = {{0, 0}, {0, 1}, {1, 0}, {1, 1}};
   NNtype xor_expected[4][1] = {{0}, {1}, {1}, {0}};
 
-  NNtype *network_value = network.memory_start;
-  while (network_value < network.final_output + network.final_output_length) {
-    *network_value = random_NNtype(-1, 1);
+  for (unsigned test = 0; test < 40; test++) {
+    srand(test);
 
-    network_value++;
-  }
+    NNtype *network_value = network.memory_start;
+    while (network_value < network.final_output + network.final_output_length) {
+      *network_value = random_NNtype(-1, 1);
 
-  for (unsigned i = 0; i < 100; i++) {
-    calculate_batch_slope(&trainer, 4, &xor_inputs[0][0], &xor_expected[0][0]);
-    apply_slopes(&trainer, 0.001f);
-    print_network(network);
-    putchar('\n');
+      network_value++;
+    }
+
+    for (unsigned i = 0; i < 200; i++) {
+      calculate_batch_slope(&trainer, 4, &xor_inputs[0][0],
+                            &xor_expected[0][0]);
+      apply_slopes(&trainer, 0.1f);
+    }
+
+    printf("test %u final loss: %g\n", test,
+           (double)calculate_batch_network_loss(&network, 4, &xor_inputs[0][0],
+                                        &xor_expected[0][0]));
   }
 
   free_network(&network);
