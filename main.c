@@ -15,13 +15,18 @@
 typedef float NNtype;
 typedef NNtype (*NNactivation)(NNtype);
 
+typedef enum {
+  NN_NO_ACTIVATION = 0,
+  NN_RELU,
+} NNActivationType;
+
 typedef struct {
   NNtype *weights;
   unsigned input_length; // weights length are input * output
   NNtype *biases;
   NNtype *outputs;
-  unsigned output_length; // biases and outputs have the same length
-  NNactivation activation; // Pass NULL here to have no activation
+  unsigned output_length;           // biases and outputs have the same length
+  NNActivationType activation_type; // Pass NULL here to have no activation
 } NNLayer;
 
 typedef struct {
@@ -55,11 +60,26 @@ static inline NNtype random_NNtype(NNtype min, NNtype max) {
          ((NNtype)rand() / ((NNtype)RAND_MAX + (NNtype)1.0)) * (max - min);
 }
 
+static inline NNtype noop_activation(NNtype value) { return value; }
+
 static inline NNtype relu_activation(NNtype value) {
   // The check is made in such a way that NaN values would progagte through here
   // and not turn into zeros.
   return value <= 0 ? 0 : value;
 }
+
+static inline NNtype relu_derivative(NNtype value) {
+  return value <= 0 ? 0 : 1;
+}
+
+const struct {
+  NNactivation activation;
+  NNactivation derivative;
+} activation_functions[] = {
+    [NN_NO_ACTIVATION] = {.activation = noop_activation,
+                          .derivative = noop_activation},
+    [NN_RELU] = {.activation = relu_activation, .derivative = relu_derivative},
+};
 
 // layers_neurons is a count of how many outputs a layer has. The first items in
 // that array is the amount of inputs the network may accept, then the rest of
@@ -110,7 +130,7 @@ bool init_network(NNNetwork *network, unsigned layers_length,
     layer->outputs = memory;
     memory += output_length;
 
-    layer->activation = i < layers_length - 2 ? relu_activation : NULL;
+    layer->activation_type = i < layers_length - 2 ? NN_RELU : NN_NO_ACTIVATION;
   }
 
   network->final_output = network->layers[network->layers_length - 1].outputs;
@@ -203,7 +223,8 @@ static inline bool float_equals_tolerance(NNtype a, NNtype b,
 }
 
 NNtype feed_neuron(unsigned input_length, const NNtype *inputs,
-                   const NNtype *weights, NNtype bias, NNactivation activation) {
+                   const NNtype *weights, NNtype bias,
+                   NNactivation activation) {
   assert(input_length > 0 && "input length of neuron can't be zero");
   assert(inputs != NULL);
   assert(weights != NULL);
@@ -226,9 +247,10 @@ void feed_layer(NNLayer *layer, const NNtype *inputs) {
   assert(inputs);
   for (unsigned output_idx = 0; output_idx < layer->output_length;
        output_idx++) {
-    layer->outputs[output_idx] = feed_neuron(
-        layer->input_length, inputs, get_weight(layer, output_idx, 0),
-        layer->biases[output_idx], layer->activation);
+    layer->outputs[output_idx] =
+        feed_neuron(layer->input_length, inputs,
+                    get_weight(layer, output_idx, 0), layer->biases[output_idx],
+                    activation_functions[layer->activation_type].activation);
   }
 }
 
@@ -379,7 +401,8 @@ void test_neuron() {
   NNtype weights[] = {1, 1};
   NNtype bias = 1;
 
-  NNtype ret = feed_neuron(ARR_LENGTH(inputs), inputs, weights, bias, relu_activation);
+  NNtype ret =
+      feed_neuron(ARR_LENGTH(inputs), inputs, weights, bias, relu_activation);
   TEST_FLOAT(ret, 3.0f);
   inputs[0] = 2;
 
@@ -554,7 +577,7 @@ void test_layer() {
     NNNetwork network = {0};
     init_network(&network, 2, (unsigned[]){3, 2});
     NNLayer layer = network.layers[0];
-    layer.activation = relu_activation;
+    layer.activation_type = NN_RELU;
 
     for (unsigned i = 0; i < layer.output_length * layer.input_length; i++) {
       layer.weights[i] = -1;
