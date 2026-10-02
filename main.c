@@ -104,6 +104,20 @@ bool init_network(NNNetwork *network, unsigned layers_length,
   return true;
 }
 
+void print_network(NNNetwork network) {
+  for (unsigned layer_idx = 0; layer_idx < network.layers_length; layer_idx++) {
+    const NNLayer layer = network.layers[layer_idx];
+    const unsigned weights_length = layer.input_length * layer.output_length;
+    printf("layer %u\n", layer_idx);
+    for (unsigned weight_idx = 0; weight_idx < weights_length; weight_idx++) {
+      printf("weight[%u] = %g\n", weight_idx, layer.weights[weight_idx]);
+    }
+    for (unsigned bias_idx = 0; bias_idx < layer.output_length; bias_idx++) {
+      printf("bias[%u] = %g\n", bias_idx, layer.biases[bias_idx]);
+    }
+  }
+}
+
 void free_network(NNNetwork *network) {
   free(network->layers);
   free(network->memory_start);
@@ -681,27 +695,13 @@ void test_trainer() {
     for (unsigned i = 0; i < 100; i++) {
       calculate_batch_slope(&trainer, 4, &xor_inputs[0][0],
                             &xor_expected[0][0]);
-      apply_slopes(&trainer, 0.2f);
+      apply_slopes(&trainer, 0.1f);
 
       NNtype batch_loss = calculate_batch_network_loss(
           trainer.network, 4, &xor_inputs[0][0], &xor_expected[0][0]);
 
       TEST_BOOL(batch_loss < prev_batch_loss, true);
-      printf("loss: %g\n", batch_loss);
       prev_batch_loss = batch_loss;
-    }
-
-    for (unsigned layer_idx = 0; layer_idx < network.layers_length;
-         layer_idx++) {
-      const NNLayer layer = network.layers[layer_idx];
-      const unsigned weights_length = layer.input_length * layer.output_length;
-      printf("layer %u\n", layer_idx);
-      for (unsigned weight_idx = 0; weight_idx < weights_length; weight_idx++) {
-        printf("weight[%u] = %g\n",weight_idx, layer.weights[weight_idx]);
-      }
-      for (unsigned bias_idx = 0; bias_idx < layer.output_length; bias_idx++) {
-        printf("bias[%u] = %g\n",bias_idx, layer.biases[bias_idx]);
-      }
     }
 
     free_network(&network);
