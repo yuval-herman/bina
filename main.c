@@ -48,6 +48,11 @@ static inline NNtype *get_weight(NNLayer *layer, unsigned output_idx,
   return layer->weights + output_idx * layer->input_length + weight_idx;
 }
 
+static inline NNtype random_NNtype(NNtype min, NNtype max) {
+  return min +
+         ((NNtype)rand() / ((NNtype)RAND_MAX + (NNtype)1.0)) * (max - min);
+}
+
 // layers_neurons is a count of how many outputs a layer has. The first items in
 // that array is the amount of inputs the network may accept, then the rest of
 // the numbers are the outputs for every sequential layer.
@@ -341,7 +346,7 @@ void apply_slopes(NNTrainer *trainer, NNtype learning_rate) {
 #define BOOL_STRING(value) ((value) ? "true" : "false")
 #define TEST_BOOL(got, expected)                                               \
   do {                                                                         \
-    if ((got) == (expected))                                                       \
+    if ((got) == (expected))                                                   \
       printf(ANSI_GREEN "Got %s which is correct\n" ANSI_RESET,                \
              BOOL_STRING(got));                                                \
     else                                                                       \
@@ -711,8 +716,33 @@ void test_trainer() {
 }
 
 int main(void) {
-  test_neuron();
-  test_layer();
-  test_network();
-  test_trainer();
+  // test_neuron();
+  // test_layer();
+  // test_network();
+  // test_trainer();
+
+  NNNetwork network = {0};
+  init_network(&network, 3, (unsigned[]){2, 2, 1});
+  NNTrainer trainer = {0};
+  init_trainer(&trainer, &network);
+
+  NNtype xor_inputs[4][2] = {{0, 0}, {0, 1}, {1, 0}, {1, 1}};
+  NNtype xor_expected[4][1] = {{0}, {1}, {1}, {0}};
+
+  NNtype *network_value = network.memory_start;
+  while (network_value < network.final_output + network.final_output_length) {
+    *network_value = random_NNtype(-1, 1);
+
+    network_value++;
+  }
+
+  for (unsigned i = 0; i < 100; i++) {
+    calculate_batch_slope(&trainer, 4, &xor_inputs[0][0], &xor_expected[0][0]);
+    apply_slopes(&trainer, 0.001f);
+    print_network(network);
+    putchar('\n');
+  }
+
+  free_network(&network);
+  free_trainer(&trainer);
 }
