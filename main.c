@@ -115,13 +115,13 @@ bool init_trainer(NNTrainer *trainer, NNNetwork *network) {
          "Network must be initialized before training starts");
 
   size_t memory_length = 0;
-  size_t slopes_length = 0;
+  unsigned slopes_length = 0;
   for (unsigned i = 0; i < network->layers_length; i++) {
     NNLayer l = network->layers[i];
     assert(l.input_length);
     assert(l.output_length);
-    size_t weights_length = l.input_length * l.output_length;
-    size_t layer_size = weights_length + l.output_length * 2;
+    unsigned weights_length = l.input_length * l.output_length;
+    unsigned layer_size = weights_length + l.output_length;
     memory_length += layer_size * sizeof(NNtype);
     slopes_length += layer_size;
   }
