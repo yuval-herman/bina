@@ -301,16 +301,51 @@ void calculate_batch_slope(NNTrainer *trainer, unsigned inputs_length,
   }
 }
 
-#define TEST_FLOAT(got, expected) TEST_FLOAT_TOL(got, expected, 1e-6)
+void apply_slopes(NNTrainer *trainer, NNtype learning_rate) {
+  assert(trainer);
+  NNNetwork *network = trainer->network;
+  assert(network && "trainer must be initialised before training");
+
+  for (unsigned layer_idx = 0; layer_idx < network->layers_length;
+       layer_idx++) {
+    const NNLayer layer = network->layers[layer_idx];
+    const unsigned weights_length = layer.input_length * layer.output_length;
+
+    for (unsigned weight_idx = 0; weight_idx < weights_length; weight_idx++) {
+      layer.weights[weight_idx] -=
+          trainer->layer_slopes[layer_idx][weight_idx] * learning_rate;
+    }
+    for (unsigned bias_idx = 0; bias_idx < layer.output_length; bias_idx++) {
+      layer.biases[bias_idx] -=
+          trainer->layer_slopes[layer_idx][weights_length + bias_idx] *
+          learning_rate;
+    }
+  }
+}
+
+#define BOOL_STRING(value) ((value) ? "true" : "false")
+#define TEST_BOOL(got, expected)                                               \
+  do {                                                                         \
+    if ((got) == (expected))                                                       \
+      printf(ANSI_GREEN "Got %s which is correct\n" ANSI_RESET,                \
+             BOOL_STRING(got));                                                \
+    else                                                                       \
+      printf(ANSI_RED "Got incorrect value! (line %d) expected %s but got "    \
+                      "%s\n" ANSI_RESET,                                       \
+             __LINE__, BOOL_STRING(expected), BOOL_STRING(got));               \
+  } while (0)
+
+#define TEST_FLOAT(got, expected) TEST_FLOAT_TOL(got, expected, 1e-6f)
 #define TEST_FLOAT_TOL(got, expected, tolerance)                               \
   do {                                                                         \
     if ((isnan(got) && isnan(expected)) ||                                     \
         float_equals_tolerance(got, expected, tolerance))                      \
-      printf(ANSI_GREEN "Got %g which is correct\n" ANSI_RESET, (double)got);  \
+      printf(ANSI_GREEN "Got %g which is correct\n" ANSI_RESET,                \
+             (double)(got));                                                   \
     else                                                                       \
       printf(ANSI_RED "Got incorrect value! (line %d) expected %g but got "    \
                       "%g\n" ANSI_RESET,                                       \
-             __LINE__, (double)expected, (double)got);                         \
+             __LINE__, (double)(expected), (double)(got));                     \
   } while (0)
 
 void test_neuron() {
@@ -591,34 +626,87 @@ void test_network() {
 }
 
 void test_trainer() {
+  {
+    NNNetwork network = {0};
+    init_network(&network, 3, (unsigned[]){2, 2, 1});
+    NNTrainer trainer = {0};
+    init_trainer(&trainer, &network);
 
-  NNNetwork network = {0};
-  init_network(&network, 3, (unsigned[]){2, 2, 1});
-  NNTrainer trainer = {0};
-  init_trainer(&trainer, &network);
+    NNtype xor_inputs[4][2] = {{0, 0}, {0, 1}, {1, 0}, {1, 1}};
+    NNtype xor_expected[4][1] = {{0}, {1}, {1}, {0}};
 
-  NNtype xor_inputs[4][2] = {{0, 0}, {0, 1}, {1, 0}, {1, 1}};
-  NNtype xor_expected[4][1] = {{0}, {1}, {1}, {0}};
+    memcpy(network.layers[0].biases, (NNtype[2]){0, 0}, 2 * sizeof(NNtype));
+    memcpy(network.layers[1].biases, (NNtype[1]){0}, 1 * sizeof(NNtype));
 
-  memcpy(network.layers[0].biases, (NNtype[2]){0, 0}, 2 * sizeof(NNtype));
-  memcpy(network.layers[1].biases, (NNtype[1]){0}, 1 * sizeof(NNtype));
+    memcpy(network.layers[0].weights, (NNtype[2 * 2]){-1, 1, 1, -1},
+           2 * 2 * sizeof(NNtype));
+    memcpy(network.layers[1].weights, (NNtype[2 * 1]){1, 1},
+           2 * 1 * sizeof(NNtype));
 
-  memcpy(network.layers[0].weights, (NNtype[2 * 2]){-1, 1, 1, -1},
-         2 * 2 * sizeof(NNtype));
-  memcpy(network.layers[1].weights, (NNtype[2 * 1]){1, 1},
-         2 * 1 * sizeof(NNtype));
+    // Set one weight wrong
+    network.layers[0].weights[0] = 1;
 
-  // Set one weight wrong
-  network.layers[0].weights[0] = 1;
+    calculate_batch_slope(&trainer, 4, &xor_inputs[0][0], &xor_expected[0][0]);
 
-  calculate_batch_slope(&trainer, 4, &xor_inputs[0][0], &xor_expected[0][0]);
+    TEST_FLOAT_TOL(trainer.layer_slopes[1][0], 2.5f, 1e-2f);
+    TEST_FLOAT_TOL(trainer.layer_slopes[1][1], 0.5f, 1e-2f);
+    TEST_FLOAT_TOL(trainer.layer_slopes[1][2], 1.5f, 1e-2f);
 
-  TEST_FLOAT_TOL(trainer.layer_slopes[1][0], 2.5f, 1e-2f);
-  TEST_FLOAT_TOL(trainer.layer_slopes[1][1], 0.5f, 1e-2f);
-  TEST_FLOAT_TOL(trainer.layer_slopes[1][2], 1.5f, 1e-2f);
+    free_network(&network);
+    free_trainer(&trainer);
+  }
+  {
+    NNNetwork network = {0};
+    init_network(&network, 3, (unsigned[]){2, 2, 1});
+    NNTrainer trainer = {0};
+    init_trainer(&trainer, &network);
 
-  free_network(&network);
-  free_trainer(&trainer);
+    NNtype xor_inputs[4][2] = {{0, 0}, {0, 1}, {1, 0}, {1, 1}};
+    NNtype xor_expected[4][1] = {{0}, {1}, {1}, {0}};
+
+    memcpy(network.layers[0].biases, (NNtype[2]){0, 0}, 2 * sizeof(NNtype));
+    memcpy(network.layers[1].biases, (NNtype[1]){0}, 1 * sizeof(NNtype));
+
+    memcpy(network.layers[0].weights, (NNtype[2 * 2]){-1, 1, 1, -1},
+           2 * 2 * sizeof(NNtype));
+    memcpy(network.layers[1].weights, (NNtype[2 * 1]){1, 1},
+           2 * 1 * sizeof(NNtype));
+
+    // Set one weight wrong
+    network.layers[0].weights[0] = 1;
+
+    NNtype prev_batch_loss = calculate_batch_network_loss(
+        trainer.network, 4, &xor_inputs[0][0], &xor_expected[0][0]);
+
+    for (unsigned i = 0; i < 100; i++) {
+      calculate_batch_slope(&trainer, 4, &xor_inputs[0][0],
+                            &xor_expected[0][0]);
+      apply_slopes(&trainer, 0.2f);
+
+      NNtype batch_loss = calculate_batch_network_loss(
+          trainer.network, 4, &xor_inputs[0][0], &xor_expected[0][0]);
+
+      TEST_BOOL(batch_loss < prev_batch_loss, true);
+      printf("loss: %g\n", batch_loss);
+      prev_batch_loss = batch_loss;
+    }
+
+    for (unsigned layer_idx = 0; layer_idx < network.layers_length;
+         layer_idx++) {
+      const NNLayer layer = network.layers[layer_idx];
+      const unsigned weights_length = layer.input_length * layer.output_length;
+      printf("layer %u\n", layer_idx);
+      for (unsigned weight_idx = 0; weight_idx < weights_length; weight_idx++) {
+        printf("weight[%u] = %g\n",weight_idx, layer.weights[weight_idx]);
+      }
+      for (unsigned bias_idx = 0; bias_idx < layer.output_length; bias_idx++) {
+        printf("bias[%u] = %g\n",bias_idx, layer.biases[bias_idx]);
+      }
+    }
+
+    free_network(&network);
+    free_trainer(&trainer);
+  }
 }
 
 int main(void) {
