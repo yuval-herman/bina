@@ -138,10 +138,6 @@ void feed_layer(NNLayer *layer, const NNtype *inputs) {
   }
 }
 
-// Doesn't actually need to accept a pointer no? I think keeping it a pointer
-// for API consistency is fine, but I added a const to signify pointers don't
-// change. Although maybe that actually shows the wrong intent and might make
-// users think the whole data does not change at all? I don't know.
 void feed_network(NNNetwork *network, const NNtype *inputs) {
   assert(network);
   assert(inputs);
@@ -156,8 +152,6 @@ void feed_network(NNNetwork *network, const NNtype *inputs) {
   }
 }
 
-// Should we calculate loss with `NNtype` or a double? This should be less of a
-// hot path then the whole network, maybe precision is more important here.
 NNtype calculate_loss(unsigned inputs_length, const NNtype *values,
                       const NNtype *expected) {
   assert(inputs_length);
