@@ -554,6 +554,7 @@ void test_layer() {
     NNNetwork network = {0};
     init_network(&network, 2, (unsigned[]){3, 2});
     NNLayer layer = network.layers[0];
+    layer.activation = relu_activation;
 
     for (unsigned i = 0; i < layer.output_length * layer.input_length; i++) {
       layer.weights[i] = -1;
