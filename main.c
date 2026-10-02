@@ -13,6 +13,7 @@
 
 // Our float type, can be changed to double or whatever
 typedef float NNtype;
+typedef NNtype (*NNactivation)(NNtype);
 
 typedef struct {
   NNtype *weights;
@@ -20,6 +21,7 @@ typedef struct {
   NNtype *biases;
   NNtype *outputs;
   unsigned output_length; // biases and outputs have the same length
+  NNactivation activation; // Pass NULL here to have no activation
 } NNLayer;
 
 typedef struct {
@@ -51,6 +53,12 @@ static inline NNtype *get_weight(NNLayer *layer, unsigned output_idx,
 static inline NNtype random_NNtype(NNtype min, NNtype max) {
   return min +
          ((NNtype)rand() / ((NNtype)RAND_MAX + (NNtype)1.0)) * (max - min);
+}
+
+static inline NNtype relu_activation(NNtype value) {
+  // The check is made in such a way that NaN values would progagte through here
+  // and not turn into zeros.
+  return value <= 0 ? 0 : value;
 }
 
 // layers_neurons is a count of how many outputs a layer has. The first items in
@@ -101,6 +109,8 @@ bool init_network(NNNetwork *network, unsigned layers_length,
 
     layer->outputs = memory;
     memory += output_length;
+
+    layer->activation = i < layers_length - 2 ? relu_activation : NULL;
   }
 
   network->final_output = network->layers[network->layers_length - 1].outputs;
@@ -192,15 +202,8 @@ static inline bool float_equals_tolerance(NNtype a, NNtype b,
   return fabsf(a - b) < fmaxf(1e-6f, tolerance * fmaxf(fabsf(a), fabsf(b)));
 }
 
-// ReLU
-static inline NNtype activation(NNtype value) {
-  // The check is made in such a way that NaN values would progagte through here
-  // and not turn into zeros.
-  return value <= 0 ? 0 : value;
-}
-
 NNtype feed_neuron(unsigned input_length, const NNtype *inputs,
-                   const NNtype *weights, NNtype bias, bool use_activation) {
+                   const NNtype *weights, NNtype bias, NNactivation activation) {
   assert(input_length > 0 && "input length of neuron can't be zero");
   assert(inputs != NULL);
   assert(weights != NULL);
@@ -210,7 +213,7 @@ NNtype feed_neuron(unsigned input_length, const NNtype *inputs,
     output += inputs[i] * weights[i];
   }
 
-  if (use_activation)
+  if (activation)
     output = activation(output + bias);
   else
     output += bias;
@@ -218,29 +221,28 @@ NNtype feed_neuron(unsigned input_length, const NNtype *inputs,
   return output;
 }
 
-void feed_layer(NNLayer *layer, const NNtype *inputs, bool use_activation) {
+void feed_layer(NNLayer *layer, const NNtype *inputs) {
   assert(layer);
   assert(inputs);
   for (unsigned output_idx = 0; output_idx < layer->output_length;
        output_idx++) {
     layer->outputs[output_idx] = feed_neuron(
         layer->input_length, inputs, get_weight(layer, output_idx, 0),
-        layer->biases[output_idx], use_activation);
+        layer->biases[output_idx], layer->activation);
   }
 }
 
 void feed_network(NNNetwork *network, const NNtype *inputs) {
   assert(network);
   assert(inputs);
-  feed_layer(network->layers + 0, inputs, true);
+  feed_layer(network->layers + 0, inputs);
 
   for (unsigned layer_idx = 1; layer_idx < network->layers_length;
        layer_idx++) {
     assert(network->layers[layer_idx].input_length ==
            network->layers[layer_idx - 1].output_length);
     feed_layer(network->layers + layer_idx,
-               network->layers[layer_idx - 1].outputs,
-               layer_idx < network->layers_length - 1);
+               network->layers[layer_idx - 1].outputs);
   }
 }
 
@@ -377,35 +379,35 @@ void test_neuron() {
   NNtype weights[] = {1, 1};
   NNtype bias = 1;
 
-  NNtype ret = feed_neuron(ARR_LENGTH(inputs), inputs, weights, bias, true);
+  NNtype ret = feed_neuron(ARR_LENGTH(inputs), inputs, weights, bias, relu_activation);
   TEST_FLOAT(ret, 3.0f);
   inputs[0] = 2;
 
-  ret = feed_neuron(ARR_LENGTH(inputs), inputs, weights, bias, true);
+  ret = feed_neuron(ARR_LENGTH(inputs), inputs, weights, bias, relu_activation);
   TEST_FLOAT(ret, 4.0f);
   inputs[1] = 2;
 
-  ret = feed_neuron(ARR_LENGTH(inputs), inputs, weights, bias, true);
+  ret = feed_neuron(ARR_LENGTH(inputs), inputs, weights, bias, relu_activation);
   TEST_FLOAT(ret, 5.0f);
   weights[0] = 2;
 
-  ret = feed_neuron(ARR_LENGTH(inputs), inputs, weights, bias, true);
+  ret = feed_neuron(ARR_LENGTH(inputs), inputs, weights, bias, relu_activation);
   TEST_FLOAT(ret, 7.0f);
   weights[1] = 2;
 
-  ret = feed_neuron(ARR_LENGTH(inputs), inputs, weights, bias, true);
+  ret = feed_neuron(ARR_LENGTH(inputs), inputs, weights, bias, relu_activation);
   TEST_FLOAT(ret, 9.0f);
   weights[1] = -2;
 
-  ret = feed_neuron(ARR_LENGTH(inputs), inputs, weights, bias, true);
+  ret = feed_neuron(ARR_LENGTH(inputs), inputs, weights, bias, relu_activation);
   TEST_FLOAT(ret, 1.0f);
   weights[0] = -2;
 
-  ret = feed_neuron(ARR_LENGTH(inputs), inputs, weights, bias, true);
+  ret = feed_neuron(ARR_LENGTH(inputs), inputs, weights, bias, relu_activation);
   TEST_FLOAT(ret, 0.0f);
 
   bias = NAN;
-  ret = feed_neuron(ARR_LENGTH(inputs), inputs, weights, bias, true);
+  ret = feed_neuron(ARR_LENGTH(inputs), inputs, weights, bias, relu_activation);
   // should be 0 but just because of activation
   // function. Otherwise we had 2*-2+2*-2+1 = -7
   TEST_FLOAT(ret, NAN);
@@ -428,7 +430,7 @@ void test_layer() {
     NNtype inputs[] = {1, 1};
     assert(ARR_LENGTH(inputs) == layer.input_length);
 
-    feed_layer(&layer, inputs, true);
+    feed_layer(&layer, inputs);
     TEST_FLOAT(layer.outputs[0], 3.0f);
     TEST_FLOAT(layer.outputs[1], 3.0f);
     TEST_FLOAT(layer.outputs[2], 3.0f);
@@ -437,7 +439,7 @@ void test_layer() {
       layer.weights[i] = 2;
     }
 
-    feed_layer(&layer, inputs, true);
+    feed_layer(&layer, inputs);
     TEST_FLOAT(layer.outputs[0], 5.0f);
     TEST_FLOAT(layer.outputs[1], 5.0f);
     TEST_FLOAT(layer.outputs[2], 5.0f);
@@ -446,7 +448,7 @@ void test_layer() {
       layer.biases[i] = 2;
     }
 
-    feed_layer(&layer, inputs, true);
+    feed_layer(&layer, inputs);
     TEST_FLOAT(layer.outputs[0], 6.0f);
     TEST_FLOAT(layer.outputs[1], 6.0f);
     TEST_FLOAT(layer.outputs[2], 6.0f);
@@ -463,7 +465,7 @@ void test_layer() {
       inputs[i] = (float)i;
     }
 
-    feed_layer(&layer, inputs, true);
+    feed_layer(&layer, inputs);
     TEST_FLOAT(layer.outputs[0], 4.0f);
     TEST_FLOAT(layer.outputs[1], 5.0f);
     TEST_FLOAT(layer.outputs[2], 6.0f);
@@ -486,7 +488,7 @@ void test_layer() {
     NNtype inputs[] = {1, 1, 1};
     assert(ARR_LENGTH(inputs) == layer.input_length);
 
-    feed_layer(&layer, inputs, true);
+    feed_layer(&layer, inputs);
     TEST_FLOAT(layer.outputs[0], 4.0f);
     TEST_FLOAT(layer.outputs[1], 4.0f);
     TEST_FLOAT(layer.outputs[2], 4.0f);
@@ -503,7 +505,7 @@ void test_layer() {
       inputs[i] = (float)i;
     }
 
-    feed_layer(&layer, inputs, true);
+    feed_layer(&layer, inputs);
     TEST_FLOAT(layer.outputs[0], 8.0f);
     TEST_FLOAT(layer.outputs[1], 16.0f);
     TEST_FLOAT(layer.outputs[2], 24.0f);
@@ -526,7 +528,7 @@ void test_layer() {
     NNtype inputs[] = {1, 1, 1};
     assert(ARR_LENGTH(inputs) == layer.input_length);
 
-    feed_layer(&layer, inputs, true);
+    feed_layer(&layer, inputs);
     TEST_FLOAT(layer.outputs[0], 4.0f);
     TEST_FLOAT(layer.outputs[1], 4.0f);
 
@@ -542,7 +544,7 @@ void test_layer() {
       inputs[i] = (float)i;
     }
 
-    feed_layer(&layer, inputs, true);
+    feed_layer(&layer, inputs);
     TEST_FLOAT(layer.outputs[0], 7.0f);
     TEST_FLOAT(layer.outputs[1], 15.0f);
 
@@ -564,7 +566,7 @@ void test_layer() {
     NNtype inputs[] = {1, 1, 1};
     assert(ARR_LENGTH(inputs) == layer.input_length);
 
-    feed_layer(&layer, inputs, true);
+    feed_layer(&layer, inputs);
     TEST_FLOAT(layer.outputs[0], 0.0f);
     TEST_FLOAT(layer.outputs[1], 0.0f);
 
@@ -580,7 +582,7 @@ void test_layer() {
       inputs[i] = (float)i - 1.5f;
     }
 
-    feed_layer(&layer, inputs, true);
+    feed_layer(&layer, inputs);
     TEST_FLOAT(layer.outputs[0], 2.5f);
     TEST_FLOAT(layer.outputs[1], 0.0f);
 
