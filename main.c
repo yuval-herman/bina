@@ -110,10 +110,11 @@ void print_network(NNNetwork network) {
     const unsigned weights_length = layer.input_length * layer.output_length;
     printf("layer %u\n", layer_idx);
     for (unsigned weight_idx = 0; weight_idx < weights_length; weight_idx++) {
-      printf("weight[%u] = %g\n", weight_idx, layer.weights[weight_idx]);
+      printf("weight[%u] = %g\n", weight_idx,
+             (double)layer.weights[weight_idx]);
     }
     for (unsigned bias_idx = 0; bias_idx < layer.output_length; bias_idx++) {
-      printf("bias[%u] = %g\n", bias_idx, layer.biases[bias_idx]);
+      printf("bias[%u] = %g\n", bias_idx, (double)layer.biases[bias_idx]);
     }
   }
 }
