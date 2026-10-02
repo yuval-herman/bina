@@ -34,6 +34,13 @@ typedef struct {
   unsigned layers_length;
 } NNNetwork;
 
+typedef struct {
+  void *memory_start;
+  NNNetwork *network;
+  NNtype *slopes;
+  unsigned slopes_length;
+} NNTrainer;
+
 static inline NNtype *get_weight(NNLayer *layer, unsigned output_idx,
                                  unsigned weight_idx) {
   return layer->weights + output_idx * layer->input_length + weight_idx;
@@ -99,6 +106,42 @@ void free_network(NNNetwork *network) {
   free(network->layers);
   free(network->memory_start);
   *network = (NNNetwork){0};
+}
+
+bool init_trainer(NNTrainer *trainer, NNNetwork *network) {
+  assert(trainer);
+  assert(network);
+  assert(network->layers_length && network->memory_start &&
+         "Network must be initialized before training starts");
+
+  size_t memory_length = 0;
+  size_t slopes_length = 0;
+  for (unsigned i = 0; i < network->layers_length; i++) {
+    NNLayer l = network->layers[i];
+    assert(l.input_length);
+    assert(l.output_length);
+    size_t weights_length = l.input_length * l.output_length;
+    size_t layer_size = weights_length + l.output_length * 2;
+    memory_length += layer_size * sizeof(NNtype);
+    slopes_length += layer_size;
+  }
+
+  NNtype *memory = malloc(memory_length);
+  if (memory == NULL) {
+    return false;
+  }
+
+  trainer->network = network;
+  trainer->memory_start = memory;
+  trainer->slopes = memory;
+  trainer->slopes_length = slopes_length;
+
+  return true;
+}
+
+void free_trainer(NNTrainer *trainer) {
+  free(trainer->memory_start);
+  *trainer = (NNTrainer){0};
 }
 
 // Check if two float are "close enough" to be considered equal
