@@ -156,6 +156,26 @@ void feed_network(NNNetwork *network, const NNtype *inputs) {
   }
 }
 
+// Should we calculate loss with `NNtype` or a double? This should be less of a
+// hot path then the whole network, maybe precision is more important here.
+NNtype calculate_loss(unsigned inputs_length, const NNtype *values,
+                      const NNtype *expected) {
+  assert(inputs_length);
+  assert(values);
+  assert(expected);
+
+  NNtype loss = 0;
+  // If the loss is huge, we might to infinity in this loop. This is actually
+  // fine, loss should go down, not up, so going to infinity means something is
+  // wrong, and its a good place to catch that.
+  for (unsigned i = 0; i < inputs_length; i++) {
+    const NNtype input_loss = values[i] - expected[i];
+    loss += input_loss * input_loss;
+  }
+
+  return loss / (NNtype)inputs_length;
+}
+
 #define TEST_FLOAT(got, expected)                                              \
   do {                                                                         \
     if ((isnan(got) && isnan(expected)) || float_equals(got, expected))        \
@@ -407,15 +427,8 @@ void test_network() {
     NNNetwork network = {0};
     init_network(&network, 3, (unsigned[]){2, 2, 1});
 
-    struct {
-      NNtype inputs[2];
-      NNtype output;
-    } xor_test[4] = {
-        {{0, 0}, 0},
-        {{0, 1}, 1},
-        {{1, 0}, 1},
-        {{1, 1}, 0},
-    };
+    NNtype xor_inputs[4][2] = {{0, 0}, {0, 1}, {1, 0}, {1, 1}};
+    NNtype xor_expected[4] = {0, 1, 1, 0};
 
     memcpy(network.layers[0].biases, (NNtype[2]){0, 0}, 2 * sizeof(NNtype));
     memcpy(network.layers[1].biases, (NNtype[1]){0}, 1 * sizeof(NNtype));
@@ -425,10 +438,25 @@ void test_network() {
     memcpy(network.layers[1].weights, (NNtype[2 * 1]){1, 1},
            2 * 1 * sizeof(NNtype));
 
-    for (unsigned i = 0; i < ARR_LENGTH(xor_test); i++) {
-      feed_network(&network, xor_test[i].inputs);
+    for (unsigned i = 0; i < ARR_LENGTH(xor_inputs); i++) {
+      feed_network(&network, xor_inputs[i]);
 
-      TEST_FLOAT(network.final_output[0], xor_test[i].output);
+      TEST_FLOAT(network.final_output[0], xor_expected[i]);
+
+      NNtype loss = calculate_loss(1, network.final_output, &xor_expected[i]);
+
+      TEST_FLOAT(loss, 0.0f);
+    }
+
+    network.layers[0].weights[0] = 1;
+
+    NNtype expected_loss[4] = {0, 0, 1, 4};
+    for (unsigned i = 0; i < ARR_LENGTH(xor_inputs); i++) {
+      feed_network(&network, xor_inputs[i]);
+
+      NNtype loss = calculate_loss(1, network.final_output, &xor_expected[i]);
+
+      TEST_FLOAT(loss, expected_loss[i]);
     }
 
     free_network(&network);
