@@ -39,6 +39,8 @@ typedef struct {
   NNNetwork *network;
   NNtype *slopes;
   unsigned slopes_length;
+  // This array containes pointers to the start of each layer's slope values.
+  NNtype **layer_slopes;
 } NNTrainer;
 
 static inline NNtype *get_weight(NNLayer *layer, unsigned output_idx,
@@ -117,11 +119,11 @@ bool init_trainer(NNTrainer *trainer, NNNetwork *network) {
   size_t memory_length = 0;
   unsigned slopes_length = 0;
   for (unsigned i = 0; i < network->layers_length; i++) {
-    NNLayer l = network->layers[i];
+    const NNLayer l = network->layers[i];
     assert(l.input_length);
     assert(l.output_length);
-    unsigned weights_length = l.input_length * l.output_length;
-    unsigned layer_size = weights_length + l.output_length;
+    const unsigned weights_length = l.input_length * l.output_length;
+    const unsigned layer_size = weights_length + l.output_length;
     memory_length += layer_size * sizeof(NNtype);
     slopes_length += layer_size;
   }
@@ -131,21 +133,44 @@ bool init_trainer(NNTrainer *trainer, NNNetwork *network) {
     return false;
   }
 
+  trainer->layer_slopes =
+      malloc(network->layers_length * sizeof(*trainer->layer_slopes));
+
+  if (trainer->layer_slopes == NULL) {
+    free(memory);
+    return false;
+  }
+
   trainer->network = network;
   trainer->memory_start = memory;
   trainer->slopes = memory;
   trainer->slopes_length = slopes_length;
+
+  trainer->layer_slopes[0] = trainer->slopes;
+
+  for (unsigned i = 0; i < network->layers_length - 1; i++) {
+    const NNLayer l = network->layers[i];
+    const unsigned weights_length = l.input_length * l.output_length;
+    const unsigned layer_size = weights_length + l.output_length;
+
+    trainer->layer_slopes[i + 1] = trainer->layer_slopes[i] + layer_size;
+  }
 
   return true;
 }
 
 void free_trainer(NNTrainer *trainer) {
   free(trainer->memory_start);
+  free(trainer->layer_slopes);
   *trainer = (NNTrainer){0};
 }
 
-// Check if two float are "close enough" to be considered equal
-bool float_equals(NNtype a, NNtype b) { return fabs(a - b) < 1e-6; }
+// Check if two float are "close enough" to be considered equal with a dynamic
+// tolerance level
+static inline bool float_equals_tolerance(NNtype a, NNtype b,
+                                          NNtype tolerance) {
+  return fabsf(a - b) < fmaxf(1e-6f, tolerance * fmaxf(fabsf(a), fabsf(b)));
+}
 
 // ReLU
 static inline NNtype activation(NNtype value) {
@@ -248,8 +273,6 @@ void calculate_batch_slope(NNTrainer *trainer, unsigned inputs_length,
        layer_idx++) {
     const NNLayer layer = network->layers[layer_idx];
     const unsigned weights_length = layer.input_length * layer.output_length;
-    const unsigned biases_length = layer.output_length;
-    const unsigned layer_length = weights_length + biases_length;
 
     for (unsigned weight_idx = 0; weight_idx < weights_length; weight_idx++) {
       NNtype previous_nn_value = layer.weights[weight_idx];
@@ -258,8 +281,8 @@ void calculate_batch_slope(NNTrainer *trainer, unsigned inputs_length,
       double avg_loss_after = calculate_batch_network_loss(
           network, inputs_length, inputs, expected);
 
-      trainer->slopes[layer_idx * (layer_length) + weight_idx] =
-          (NNtype)(avg_loss_before - avg_loss_after) / nudge_value;
+      trainer->layer_slopes[layer_idx][weight_idx] =
+          (NNtype)(avg_loss_after - avg_loss_before) / nudge_value;
 
       layer.weights[weight_idx] = previous_nn_value;
     }
@@ -270,17 +293,19 @@ void calculate_batch_slope(NNTrainer *trainer, unsigned inputs_length,
       double avg_loss_after = calculate_batch_network_loss(
           network, inputs_length, inputs, expected);
 
-      trainer->slopes[layer_idx * (layer_length) + bias_idx] =
-          (NNtype)(avg_loss_before - avg_loss_after) / nudge_value;
+      trainer->layer_slopes[layer_idx][weights_length + bias_idx] =
+          (NNtype)(avg_loss_after - avg_loss_before) / nudge_value;
 
       layer.biases[bias_idx] = previous_nn_value;
     }
   }
 }
 
-#define TEST_FLOAT(got, expected)                                              \
+#define TEST_FLOAT(got, expected) TEST_FLOAT_TOL(got, expected, 1e-6)
+#define TEST_FLOAT_TOL(got, expected, tolerance)                               \
   do {                                                                         \
-    if ((isnan(got) && isnan(expected)) || float_equals(got, expected))        \
+    if ((isnan(got) && isnan(expected)) ||                                     \
+        float_equals_tolerance(got, expected, tolerance))                      \
       printf(ANSI_GREEN "Got %g which is correct\n" ANSI_RESET, (double)got);  \
     else                                                                       \
       printf(ANSI_RED "Got incorrect value! (line %d) expected %g but got "    \
@@ -565,8 +590,40 @@ void test_network() {
   }
 }
 
+void test_trainer() {
+
+  NNNetwork network = {0};
+  init_network(&network, 3, (unsigned[]){2, 2, 1});
+  NNTrainer trainer = {0};
+  init_trainer(&trainer, &network);
+
+  NNtype xor_inputs[4][2] = {{0, 0}, {0, 1}, {1, 0}, {1, 1}};
+  NNtype xor_expected[4][1] = {{0}, {1}, {1}, {0}};
+
+  memcpy(network.layers[0].biases, (NNtype[2]){0, 0}, 2 * sizeof(NNtype));
+  memcpy(network.layers[1].biases, (NNtype[1]){0}, 1 * sizeof(NNtype));
+
+  memcpy(network.layers[0].weights, (NNtype[2 * 2]){-1, 1, 1, -1},
+         2 * 2 * sizeof(NNtype));
+  memcpy(network.layers[1].weights, (NNtype[2 * 1]){1, 1},
+         2 * 1 * sizeof(NNtype));
+
+  // Set one weight wrong
+  network.layers[0].weights[0] = 1;
+
+  calculate_batch_slope(&trainer, 4, &xor_inputs[0][0], &xor_expected[0][0]);
+
+  TEST_FLOAT_TOL(trainer.layer_slopes[1][0], 2.5f, 1e-2f);
+  TEST_FLOAT_TOL(trainer.layer_slopes[1][1], 0.5f, 1e-2f);
+  TEST_FLOAT_TOL(trainer.layer_slopes[1][2], 1.5f, 1e-2f);
+
+  free_network(&network);
+  free_trainer(&trainer);
+}
+
 int main(void) {
   test_neuron();
   test_layer();
   test_network();
+  test_trainer();
 }
