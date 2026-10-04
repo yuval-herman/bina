@@ -862,6 +862,42 @@ void test_trainer() {
   }
   {
     NNNetwork network = {0};
+    init_network(&network, 4, (unsigned[]){2, 2, 2, 2});
+    network.layers[1].activation_type = NN_NO_ACTIVATION;
+    NNTrainer nudge_trainer = {0};
+    init_trainer(&nudge_trainer, &network);
+    NNTrainer trainer = {0};
+    init_trainer(&trainer, &network);
+
+    NNtype inputs[4][2] = {{0, 0}, {0, 1}, {1, 0}, {1, 1}};
+    NNtype expected[4][2] = {{0, 0}, {1, 1}, {1, 1}, {0, 0}};
+
+    // Set weights to random values
+    srand(0);
+
+    NNtype *network_value = network.memory_start;
+    while (network_value < network.final_output + network.final_output_length) {
+      *network_value = random_NNtype(-1, 1);
+
+      network_value++;
+    }
+
+    calculate_batch_slope_nudge_version(&nudge_trainer, 4, &inputs[0][0],
+                                        &expected[0][0]);
+    batch_backpropagation_step(&trainer, 4, &inputs[0][0], &expected[0][0]);
+
+    for (unsigned slope_idx = 0; slope_idx < trainer.slopes_length;
+         slope_idx++) {
+      TEST_FLOAT_TOL(trainer.slopes[slope_idx], nudge_trainer.slopes[slope_idx],
+                     0.003f, 1e-2f);
+    }
+
+    free_network(&network);
+    free_trainer(&trainer);
+    free_trainer(&nudge_trainer);
+  }
+  {
+    NNNetwork network = {0};
     init_xor_network(&network);
     NNTrainer nudge_trainer = {0};
     init_trainer(&nudge_trainer, &network);
