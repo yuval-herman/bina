@@ -1,9 +1,11 @@
 #include <assert.h>
 #include <math.h>
 #include <stdbool.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #define ANSI_RED "\033[31m"
 #define ANSI_GREEN "\033[32m"
@@ -53,14 +55,16 @@ typedef struct {
   NNtype **layer_deltas;
 } NNTrainer;
 
-static inline NNtype *get_weight(NNLayer *layer, unsigned output_idx,
-                                 unsigned weight_idx) {
-  return layer->weights + output_idx * layer->input_length + weight_idx;
-}
-
 static inline NNtype random_NNtype(NNtype min, NNtype max) {
   return min +
          ((NNtype)rand() / ((NNtype)RAND_MAX + (NNtype)1.0)) * (max - min);
+}
+
+static inline uint64_t get_time(void) {
+  struct timespec ts;
+  clock_gettime(CLOCK_MONOTONIC, &ts);
+
+  return 1000 * 1000 * 1000 * (uint64_t)ts.tv_sec + (uint64_t)ts.tv_nsec;
 }
 
 static inline NNtype noop_activation(NNtype value) { return value; }
@@ -88,6 +92,11 @@ const struct {
                           .derivative = noop_derivative},
     [NN_RELU] = {.activation = relu_activation, .derivative = relu_derivative},
 };
+
+static inline NNtype *get_weight(NNLayer *layer, unsigned output_idx,
+                                 unsigned weight_idx) {
+  return layer->weights + output_idx * layer->input_length + weight_idx;
+}
 
 // layers_neurons is a count of how many outputs a layer has. The first items in
 // that array is the amount of inputs the network may accept, then the rest of
@@ -384,9 +393,9 @@ void calculate_batch_slope_numeric(NNTrainer *trainer, unsigned inputs_length,
 // Calculates and applies a single backpropagation step for a batch of inputs.
 // `inputs` and `expected` are both 2d arrays that are expected to be in
 // contiguous memory.
-void batch_backpropagation_step(NNTrainer *trainer, unsigned inputs_length,
+void batch_backpropagation_step(NNTrainer *trainer, unsigned batch_length,
                                 const NNtype *inputs, const NNtype *expected) {
-  assert(inputs_length && inputs);
+  assert(batch_length && inputs);
   assert(expected);
   assert(trainer);
   NNNetwork *network = trainer->network;
@@ -394,7 +403,7 @@ void batch_backpropagation_step(NNTrainer *trainer, unsigned inputs_length,
 
   memset(trainer->slopes, 0, trainer->slopes_length * sizeof(NNtype));
 
-  for (unsigned input_batch_idx = 0; input_batch_idx < inputs_length;
+  for (unsigned input_batch_idx = 0; input_batch_idx < batch_length;
        input_batch_idx++) {
     const NNtype *input_batch =
         inputs + network->layers[0].input_length * input_batch_idx;
@@ -496,7 +505,7 @@ void batch_backpropagation_step(NNTrainer *trainer, unsigned inputs_length,
 
   for (unsigned slope_idx = 0; slope_idx < trainer->slopes_length;
        slope_idx++) {
-    trainer->slopes[slope_idx] /= (NNtype)inputs_length;
+    trainer->slopes[slope_idx] /= (NNtype)batch_length;
   }
 }
 
@@ -956,47 +965,101 @@ void test_summary() {
 }
 
 int main(void) {
+#ifndef NDEBUG
   test_neuron();
   test_layer();
   test_network();
   test_trainer();
   test_summary();
+#endif
 
-  NNNetwork network = {0};
-  init_network(&network, 3, (unsigned[]){2, 4, 1});
-  NNTrainer trainer = {0};
-  init_trainer(&trainer, &network);
-  const unsigned tests_count = 40;
-  unsigned solved_count = 0;
-  NNtype solve_threshold = 0.01f;
+  const unsigned batch_length = 10;
+  const NNtype learning_rate = 0.1f;
 
-  NNtype xor_inputs[4][2] = {{0, 0}, {0, 1}, {1, 0}, {1, 1}};
-  NNtype xor_expected[4][1] = {{0}, {1}, {1}, {0}};
+  const unsigned input_length = 32;
+  const unsigned expected_length = 10;
 
-  for (unsigned test = 0; test < tests_count; test++) {
-    srand(test);
+  NNtype inputs[batch_length][input_length];
+  NNtype expected[batch_length][expected_length];
 
-    NNtype *network_value = network.memory_start;
-    while (network_value < network.final_output + network.final_output_length) {
-      *network_value = random_NNtype(-1, 1);
-
-      network_value++;
+  for (unsigned batch_idx = 0; batch_idx < batch_length; batch_idx++) {
+    for (unsigned input_idx = 0; input_idx < input_length; input_idx++) {
+      inputs[batch_idx][input_idx] = random_NNtype(-1, 1);
     }
-
-    for (unsigned i = 0; i < 200; i++) {
-      batch_backpropagation_step(&trainer, 4, &xor_inputs[0][0],
-                                 &xor_expected[0][0]);
-      apply_slopes(&trainer, 0.1f);
+    for (unsigned expected_idx = 0; expected_idx < expected_length;
+         expected_idx++) {
+      expected[batch_idx][expected_idx] = random_NNtype(-1, 1);
     }
-
-    NNtype loss = calculate_batch_network_loss(&network, 4, &xor_inputs[0][0],
-                                               &xor_expected[0][0]);
-    printf("test %u final loss: %g\n", test, (double)loss);
-    if (loss <= solve_threshold)
-      solved_count++;
   }
 
-  printf("Solved %u out of %u tests.\n", solved_count, tests_count);
+  NNNetwork network = {0};
+  unsigned network_layers[] = {input_length, 32, 32, expected_length};
+  init_network(&network, ARR_LENGTH(network_layers), network_layers);
+  NNTrainer trainer = {0};
+  init_trainer(&trainer, &network);
+
+  srand(0);
+
+  NNtype *network_value = network.memory_start;
+  while (network_value < network.final_output + network.final_output_length) {
+    *network_value = random_NNtype(-1, 1);
+
+    network_value++;
+  }
+
+  uint64_t backprop_min_time = UINT64_MAX;
+  uint64_t apply_slope_min_time = UINT64_MAX;
+  uint64_t feed_net_min_time = UINT64_MAX;
+
+  double backprop_average_time = 0;
+  double apply_slope_average_time = 0;
+  double feed_net_average_time = 0;
+
+  unsigned warmup_runs = 10;
+  const unsigned runs = 100;
+
+  for (unsigned run = 0; warmup_runs || run < runs;) {
+    uint64_t backprop_time = get_time();
+    batch_backpropagation_step(&trainer, batch_length, &inputs[0][0],
+                               &expected[0][0]);
+    backprop_time = get_time() - backprop_time;
+
+    uint64_t apply_slope_time = get_time();
+    apply_slopes(&trainer, learning_rate);
+    apply_slope_time = get_time() - apply_slope_time;
+
+    uint64_t feed_net_time = get_time();
+    feed_network(&network, &inputs[0][0]);
+    feed_net_time = get_time() - feed_net_time;
+
+    if (backprop_min_time > backprop_time)
+      backprop_min_time = backprop_time;
+    if (apply_slope_min_time > apply_slope_time)
+      apply_slope_min_time = apply_slope_time;
+    if (feed_net_min_time > feed_net_time)
+      feed_net_min_time = feed_net_time;
+
+    if (!warmup_runs) {
+      backprop_average_time += (double)backprop_time;
+      apply_slope_average_time += (double)apply_slope_time;
+      feed_net_average_time += (double)feed_net_time;
+    }
+    if (warmup_runs)
+      warmup_runs--;
+    else
+      run++;
+  }
+
+  backprop_average_time /= runs;
+  apply_slope_average_time /= runs;
+  feed_net_average_time /= runs;
+
+  printf("backprop => min: %lu avg %g\n", backprop_min_time,
+         backprop_average_time);
+  printf("apply_slope => min: %lu avg %g\n", apply_slope_min_time,
+         apply_slope_average_time);
+  printf("feed_net => min: %lu avg %g\n", feed_net_min_time,
+         feed_net_average_time);
 
   free_network(&network);
   free_trainer(&trainer);
