@@ -248,8 +248,10 @@ void free_trainer(NNTrainer *trainer) {
 // Check if two float are "close enough" to be considered equal with a dynamic
 // tolerance level
 static inline bool float_equals_tolerance(NNtype a, NNtype b,
-                                          NNtype tolerance) {
-  return fabsf(a - b) < fmaxf(1e-3f, tolerance * fmaxf(fabsf(a), fabsf(b)));
+                                          NNtype absolute_tolerance,
+                                          NNtype relative_tolerance) {
+  return fabsf(a - b) < fmaxf(absolute_tolerance,
+                              relative_tolerance * fmaxf(fabsf(a), fabsf(b)));
 }
 
 NNtype feed_neuron(unsigned input_length, const NNtype *inputs,
@@ -540,12 +542,13 @@ unsigned test_count = 0;
   TEST_REGISTER(BOOL_STRING(got), BOOL_STRING(expected), (got) == (expected),  \
                 "%s")
 
-#define TEST_FLOAT(got, expected) TEST_FLOAT_TOL(got, expected, 1e-6f)
-#define TEST_FLOAT_TOL(got, expected, tolerance)                               \
-  TEST_REGISTER((double)got, (double)expected,                                 \
-                (isnan(got) && isnan(expected)) ||                             \
-                    float_equals_tolerance(got, expected, tolerance),          \
-                "%g")
+#define TEST_FLOAT(got, expected) TEST_FLOAT_TOL(got, expected, 1e-6f, 1e-6f)
+#define TEST_FLOAT_TOL(got, expected, a_tolerance, r_tolerance)                \
+  TEST_REGISTER(                                                               \
+      (double)got, (double)expected,                                           \
+      (isnan(got) && isnan(expected)) ||                                       \
+          float_equals_tolerance(got, expected, a_tolerance, r_tolerance),     \
+      "%g")
 
 void test_neuron() {
   NNtype inputs[] = {1, 1};
@@ -850,9 +853,9 @@ void test_trainer() {
     calculate_batch_slope_nudge_version(&trainer, 4, &xor_inputs[0][0],
                                         &xor_expected[0][0]);
 
-    TEST_FLOAT_TOL(trainer.layer_slopes[1][0], 2.5f, 1e-2f);
-    TEST_FLOAT_TOL(trainer.layer_slopes[1][1], 0.5f, 1e-2f);
-    TEST_FLOAT_TOL(trainer.layer_slopes[1][2], 1.5f, 1e-2f);
+    TEST_FLOAT_TOL(trainer.layer_slopes[1][0], 2.5f, 1e-6f, 1e-2f);
+    TEST_FLOAT_TOL(trainer.layer_slopes[1][1], 0.5f, 1e-6f, 1e-2f);
+    TEST_FLOAT_TOL(trainer.layer_slopes[1][2], 1.5f, 1e-6f, 1e-2f);
 
     free_network(&network);
     free_trainer(&trainer);
@@ -890,7 +893,7 @@ void test_trainer() {
       for (unsigned slope_idx = 0; slope_idx < trainer.slopes_length;
            slope_idx++) {
         TEST_FLOAT_TOL(nudge_trainer.slopes[slope_idx],
-                       trainer.slopes[slope_idx], 0.01f);
+                       trainer.slopes[slope_idx], 1e-3f, 0.01f);
       }
       apply_slopes(&trainer, 0.1f);
 
