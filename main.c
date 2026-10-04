@@ -65,6 +65,11 @@ static inline NNtype random_NNtype(NNtype min, NNtype max) {
 
 static inline NNtype noop_activation(NNtype value) { return value; }
 
+static inline NNtype noop_derivative(NNtype value) {
+  (void)value;
+  return 1;
+}
+
 static inline NNtype relu_activation(NNtype value) {
   // The check is made in such a way that NaN values would progagte through here
   // and not turn into zeros.
@@ -80,7 +85,7 @@ const struct {
   NNactivation derivative;
 } activation_functions[] = {
     [NN_NO_ACTIVATION] = {.activation = noop_activation,
-                          .derivative = noop_activation},
+                          .derivative = noop_derivative},
     [NN_RELU] = {.activation = relu_activation, .derivative = relu_derivative},
 };
 
