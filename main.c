@@ -1015,8 +1015,8 @@ int main(void) {
   double apply_slope_average_time = 0;
   double feed_net_average_time = 0;
 
-  unsigned warmup_runs = 10;
-  const unsigned runs = 100;
+  unsigned warmup_runs = 100;
+  const unsigned runs = 1000;
 
   for (unsigned run = 0; warmup_runs || run < runs;) {
     uint64_t backprop_time = get_time();
