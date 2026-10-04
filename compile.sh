@@ -13,22 +13,53 @@ common_flags=(
   -Wpointer-arith
 )
 
+build_debug() {
+  gcc "${common_flags[@]}" \
+    -g -O0 \
+    -fsanitize=address,undefined \
+    -o main main.c -lm
+}
+
+build_production() {
+  gcc "${common_flags[@]}" \
+    -O3 -DNDEBUG \
+    -o main main.c -lm
+}
+
+run_tests() {
+  echo "Building debug..."
+  build_debug
+
+  echo "Running debug executable..."
+  if ./main; then
+    echo "Debug executable exited successfully."
+  else
+    status=$?
+    echo "Debug executable failed with exit status $status."
+    exit "$status"
+  fi
+
+  echo "Building production..."
+  build_production
+
+  echo "Production build succeeded."
+}
+
 case "$mode" in
   debug)
-    gcc "${common_flags[@]}" \
-      -g -O0 \
-      -fsanitize=address,undefined \
-      -o main main.c -lm
+    build_debug
     ;;
 
   production|prod|release)
-    gcc "${common_flags[@]}" \
-      -O3 -DNDEBUG \
-      -o main main.c -lm
+    build_production
+    ;;
+
+  test)
+    run_tests
     ;;
 
   *)
-    echo "Usage: $0 [debug|prod]"
+    echo "Usage: $0 [debug|prod|test]"
     exit 1
     ;;
 esac
