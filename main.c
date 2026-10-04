@@ -516,30 +516,31 @@ void apply_slopes(NNTrainer *trainer, NNtype learning_rate) {
   }
 }
 
+unsigned passing_tests = 0;
+unsigned test_count = 0;
+
+#define TEST_REGISTER(got, expected, pass, format)                             \
+  do {                                                                         \
+    test_count++;                                                              \
+    if (pass)                                                                  \
+      passing_tests++;                                                         \
+    else                                                                       \
+      printf(ANSI_RED "Got incorrect value! (line %d) expected " format        \
+                      " but got " format "\n" ANSI_RESET,                      \
+             __LINE__, (expected), (got));                                     \
+  } while (0)
+
 #define BOOL_STRING(value) ((value) ? "true" : "false")
 #define TEST_BOOL(got, expected)                                               \
-  do {                                                                         \
-    if ((got) == (expected))                                                   \
-      printf(ANSI_GREEN "Got %s which is correct\n" ANSI_RESET,                \
-             BOOL_STRING(got));                                                \
-    else                                                                       \
-      printf(ANSI_RED "Got incorrect value! (line %d) expected %s but got "    \
-                      "%s\n" ANSI_RESET,                                       \
-             __LINE__, BOOL_STRING(expected), BOOL_STRING(got));               \
-  } while (0)
+  TEST_REGISTER(BOOL_STRING(got), BOOL_STRING(expected), (got) == (expected),  \
+                "%s")
 
 #define TEST_FLOAT(got, expected) TEST_FLOAT_TOL(got, expected, 1e-6f)
 #define TEST_FLOAT_TOL(got, expected, tolerance)                               \
-  do {                                                                         \
-    if ((isnan(got) && isnan(expected)) ||                                     \
-        float_equals_tolerance(got, expected, tolerance))                      \
-      printf(ANSI_GREEN "Got %g which is correct\n" ANSI_RESET,                \
-             (double)(got));                                                   \
-    else                                                                       \
-      printf(ANSI_RED "Got incorrect value! (line %d) expected %g but got "    \
-                      "%g\n" ANSI_RESET,                                       \
-             __LINE__, (double)(expected), (double)(got));                     \
-  } while (0)
+  TEST_REGISTER((double)got, (double)expected,                                 \
+                (isnan(got) && isnan(expected)) ||                             \
+                    float_equals_tolerance(got, expected, tolerance),          \
+                "%g")
 
 void test_neuron() {
   NNtype inputs[] = {1, 1};
@@ -894,11 +895,22 @@ void test_trainer() {
   }
 }
 
+void test_summary() {
+  if (test_count > passing_tests) {
+    const unsigned failing = test_count - passing_tests;
+    printf("ran %u tests, with %u (%.3g%%) failing.\n", test_count, failing,
+           ((double)failing / test_count)*100);
+  } else {
+    printf("ran %u tests, with no fails!.\n", test_count);
+  }
+}
+
 int main(void) {
   test_neuron();
   test_layer();
   test_network();
   test_trainer();
+  test_summary();
 
   // NNNetwork network = {0};
   // init_network(&network, 3, (unsigned[]){2, 4, 1});
