@@ -951,7 +951,7 @@ void test_summary() {
     printf("ran %u tests, with %u (%.3g%%) failing.\n", test_count, failing,
            ((double)failing / test_count) * 100);
   } else {
-    printf("ran %u tests, with no fails!.\n", test_count);
+    printf("ran %u tests, with no fails!\n", test_count);
   }
 }
 
@@ -962,37 +962,42 @@ int main(void) {
   test_trainer();
   test_summary();
 
-  // NNNetwork network = {0};
-  // init_network(&network, 3, (unsigned[]){2, 4, 1});
-  // NNTrainer trainer = {0};
-  // init_trainer(&trainer, &network);
+  NNNetwork network = {0};
+  init_network(&network, 3, (unsigned[]){2, 4, 1});
+  NNTrainer trainer = {0};
+  init_trainer(&trainer, &network);
+  const unsigned tests_count = 40;
+  unsigned solved_count = 0;
+  NNtype solve_threshold = 0.01f;
 
-  // NNtype xor_inputs[4][2] = {{0, 0}, {0, 1}, {1, 0}, {1, 1}};
-  // NNtype xor_expected[4][1] = {{0}, {1}, {1}, {0}};
+  NNtype xor_inputs[4][2] = {{0, 0}, {0, 1}, {1, 0}, {1, 1}};
+  NNtype xor_expected[4][1] = {{0}, {1}, {1}, {0}};
 
-  // for (unsigned test = 0; test < 40; test++) {
-  //   srand(test);
+  for (unsigned test = 0; test < tests_count; test++) {
+    srand(test);
 
-  //   NNtype *network_value = network.memory_start;
-  //   while (network_value < network.final_output +
-  //   network.final_output_length) {
-  //     *network_value = random_NNtype(-1, 1);
+    NNtype *network_value = network.memory_start;
+    while (network_value < network.final_output + network.final_output_length) {
+      *network_value = random_NNtype(-1, 1);
 
-  //     network_value++;
-  //   }
+      network_value++;
+    }
 
-  //   for (unsigned i = 0; i < 200; i++) {
-  //     calculate_batch_slope(&trainer, 4, &xor_inputs[0][0],
-  //                           &xor_expected[0][0]);
-  //     apply_slopes(&trainer, 0.1f);
-  //   }
+    for (unsigned i = 0; i < 200; i++) {
+      batch_backpropagation_step(&trainer, 4, &xor_inputs[0][0],
+                                 &xor_expected[0][0]);
+      apply_slopes(&trainer, 0.1f);
+    }
 
-  //   printf("test %u final loss: %g\n", test,
-  //          (double)calculate_batch_network_loss(&network, 4,
-  //          &xor_inputs[0][0],
-  //                                               &xor_expected[0][0]));
-  // }
+    NNtype loss = calculate_batch_network_loss(&network, 4, &xor_inputs[0][0],
+                                               &xor_expected[0][0]);
+    printf("test %u final loss: %g\n", test, (double)loss);
+    if (loss <= solve_threshold)
+      solved_count++;
+  }
 
-  // free_network(&network);
-  // free_trainer(&trainer);
+  printf("Solved %u out of %u tests.\n", solved_count, tests_count);
+
+  free_network(&network);
+  free_trainer(&trainer);
 }
