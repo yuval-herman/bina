@@ -404,7 +404,8 @@ void batch_backpropagation_step(NNTrainer *trainer, unsigned inputs_length,
       const NNtype neuron_output = network->final_output[neuron_idx];
       NNtype *layer_deltas = trainer->layer_deltas[network->layers_length - 1];
 
-      layer_deltas[neuron_idx] += (neuron_output - neuron_expected) * 2;
+      layer_deltas[neuron_idx] = (neuron_output - neuron_expected) * 2 /
+                                 (NNtype)network->final_output_length;
     }
 
     // deltas for the rest of the layers
