@@ -432,18 +432,19 @@ void batch_backpropagation_step(NNTrainer *trainer, unsigned batch_length,
       NNLayer *last_visited_layer = &network->layers[layer_idx + 1];
       NNtype *last_visited_layer_deltas = trainer->layer_deltas[layer_idx + 1];
 
-      for (unsigned neuron_idx = 0; neuron_idx < layer->output_length;
-           neuron_idx++) {
-
-        for (unsigned last_layer_neuron_idx = 0;
-             last_layer_neuron_idx < last_visited_layer->output_length;
-             last_layer_neuron_idx++) {
-
+      for (unsigned last_layer_neuron_idx = 0;
+           last_layer_neuron_idx < last_visited_layer->output_length;
+           last_layer_neuron_idx++) {
+        for (unsigned neuron_idx = 0; neuron_idx < layer->output_length;
+             neuron_idx++) {
           layer_deltas[neuron_idx] +=
               *get_weight(last_visited_layer, last_layer_neuron_idx,
                           neuron_idx) *
               last_visited_layer_deltas[last_layer_neuron_idx];
         }
+      }
+      for (unsigned neuron_idx = 0; neuron_idx < layer->output_length;
+           neuron_idx++) {
         layer_deltas[neuron_idx] *=
             activation_functions[layer->activation_type].derivative(
                 // TODO use the output before activation to get the correct
@@ -467,11 +468,12 @@ void batch_backpropagation_step(NNTrainer *trainer, unsigned batch_length,
             trainer->layer_deltas[layer_idx][bias_idx];
       }
 
-      for (unsigned input_idx = 0; input_idx < layer.input_length;
-           input_idx++) {
-        for (unsigned neuron_idx = 0; neuron_idx < layer.output_length;
-             neuron_idx++) {
-          layer_slopes[input_idx + layer.input_length * neuron_idx] +=
+      for (unsigned neuron_idx = 0; neuron_idx < layer.output_length;
+           neuron_idx++) {
+        NNtype *weight_slopes = layer_slopes + layer.input_length * neuron_idx;
+        for (unsigned input_idx = 0; input_idx < layer.input_length;
+             input_idx++) {
+          weight_slopes[input_idx] +=
               input_batch[input_idx] *
               trainer->layer_deltas[layer_idx][neuron_idx];
         }
@@ -491,11 +493,12 @@ void batch_backpropagation_step(NNTrainer *trainer, unsigned batch_length,
             trainer->layer_deltas[layer_idx][bias_idx];
       }
 
-      for (unsigned input_idx = 0; input_idx < layer.input_length;
-           input_idx++) {
-        for (unsigned neuron_idx = 0; neuron_idx < layer.output_length;
-             neuron_idx++) {
-          layer_slopes[input_idx + layer.input_length * neuron_idx] +=
+      for (unsigned neuron_idx = 0; neuron_idx < layer.output_length;
+           neuron_idx++) {
+        NNtype *weight_slopes = layer_slopes + layer.input_length * neuron_idx;
+        for (unsigned input_idx = 0; input_idx < layer.input_length;
+             input_idx++) {
+          weight_slopes[input_idx] +=
               preceding_layer.outputs[input_idx] *
               trainer->layer_deltas[layer_idx][neuron_idx];
         }
@@ -954,13 +957,15 @@ void test_trainer() {
   }
 }
 
-void test_summary() {
+bool test_summary() {
   if (test_count > passing_tests) {
     const unsigned failing = test_count - passing_tests;
     printf("ran %u tests, with %u (%.3g%%) failing.\n", test_count, failing,
            ((double)failing / test_count) * 100);
+    return false;
   } else {
     printf("ran %u tests, with no fails!\n", test_count);
+    return true;
   }
 }
 
@@ -970,9 +975,9 @@ int main(void) {
   test_layer();
   test_network();
   test_trainer();
-  test_summary();
-#endif
-
+  if (!test_summary())
+    return 1;
+#else
   const unsigned batch_length = 10;
   const NNtype learning_rate = 0.1f;
 
@@ -1015,8 +1020,8 @@ int main(void) {
   double apply_slope_average_time = 0;
   double feed_net_average_time = 0;
 
-  unsigned warmup_runs = 100;
-  const unsigned runs = 1000;
+  unsigned warmup_runs = 1000;
+  const unsigned runs = 10000;
 
   for (unsigned run = 0; warmup_runs || run < runs;) {
     uint64_t backprop_time = get_time();
@@ -1063,4 +1068,5 @@ int main(void) {
 
   free_network(&network);
   free_trainer(&trainer);
+#endif
 }
