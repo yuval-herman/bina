@@ -487,7 +487,8 @@ void batch_backpropagation_step(NNTrainer *trainer, unsigned inputs_length,
     }
   }
 
-  for (unsigned slope_idx=0; slope_idx < trainer->slopes_length; slope_idx++) {
+  for (unsigned slope_idx = 0; slope_idx < trainer->slopes_length;
+       slope_idx++) {
     trainer->slopes[slope_idx] /= (NNtype)inputs_length;
   }
 }
@@ -852,6 +853,8 @@ void test_trainer() {
   {
     NNNetwork network = {0};
     init_xor_network(&network);
+    NNTrainer nudge_trainer = {0};
+    init_trainer(&nudge_trainer, &network);
     NNTrainer trainer = {0};
     init_trainer(&trainer, &network);
 
@@ -864,9 +867,17 @@ void test_trainer() {
     NNtype prev_batch_loss = calculate_batch_network_loss(
         trainer.network, 4, &xor_inputs[0][0], &xor_expected[0][0]);
 
-    for (unsigned i = 0; i < 100; i++) {
-      calculate_batch_slope_nudge_version(&trainer, 4, &xor_inputs[0][0],
+    for (unsigned i = 0; i < 10; i++) {
+      calculate_batch_slope_nudge_version(&nudge_trainer, 4, &xor_inputs[0][0],
                                           &xor_expected[0][0]);
+      batch_backpropagation_step(&trainer, 4, &xor_inputs[0][0],
+                                 &xor_expected[0][0]);
+
+      for (unsigned slope_idx = 0; slope_idx < trainer.slopes_length;
+           slope_idx++) {
+        TEST_FLOAT_TOL(nudge_trainer.slopes[slope_idx],
+                       trainer.slopes[slope_idx], 0.1f);
+      }
       apply_slopes(&trainer, 0.1f);
 
       NNtype batch_loss = calculate_batch_network_loss(
@@ -877,49 +888,7 @@ void test_trainer() {
     }
 
     free_network(&network);
-    free_trainer(&trainer);
-  }
-  {
-    NNNetwork network = {0};
-    init_xor_network(&network);
-    NNTrainer trainer = {0};
-    init_trainer(&trainer, &network);
-
-    // NNtype xor_inputs[4][2] = {{0, 0}, {0, 1}, {1, 0}, {1, 1}};
-    // NNtype xor_expected[4][1] = {{0}, {1}, {1}, {0}};
-    NNtype xor_inputs[1][2] = {{1, 0}};
-    NNtype xor_expected[1][1] = {{1}};
-
-    // Set one weight wrong
-    network.layers[0].weights[0] = 1;
-
-    // NNtype prev_batch_loss = calculate_batch_network_loss(
-    //     trainer.network, 4, &xor_inputs[0][0], &xor_expected[0][0]);
-
-    // for (unsigned i = 0; i < 100; i++) {
-    batch_backpropagation_step(&trainer, 1, &xor_inputs[0][0],
-                               &xor_expected[0][0]);
-    printf("layer deltas\n");
-    for (unsigned layer_idx = 0; layer_idx < network.layers_length;
-         layer_idx++) {
-      printf("layer %u\n", layer_idx);
-      const NNLayer layer = network.layers[layer_idx];
-      for (unsigned neuron_idx = 0; neuron_idx < layer.output_length;
-           neuron_idx++) {
-        printf("neuron %u delta = %g\n", neuron_idx,
-               (double)trainer.layer_deltas[layer_idx][neuron_idx]);
-      }
-      // }
-      // apply_slopes(&trainer, 0.1f);
-
-      // NNtype batch_loss = calculate_batch_network_loss(
-      //     trainer.network, 4, &xor_inputs[0][0], &xor_expected[0][0]);
-
-      // TEST_BOOL(batch_loss < prev_batch_loss, true);
-      // prev_batch_loss = batch_loss;
-    }
-
-    free_network(&network);
+    free_trainer(&nudge_trainer);
     free_trainer(&trainer);
   }
 }
