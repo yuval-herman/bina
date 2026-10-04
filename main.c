@@ -331,8 +331,10 @@ NNtype calculate_batch_network_loss(NNNetwork *network, unsigned inputs_length,
 // something that should be thought about.
 // `inputs` and `expected` are both 2d arrays that are expected to be in
 // contiguous memory.
-void calculate_batch_slope(NNTrainer *trainer, unsigned inputs_length,
-                           const NNtype *inputs, const NNtype *expected) {
+void calculate_batch_slope_nudge_version(NNTrainer *trainer,
+                                         unsigned inputs_length,
+                                         const NNtype *inputs,
+                                         const NNtype *expected) {
   assert(inputs_length && inputs);
   assert(expected);
   assert(trainer);
@@ -837,7 +839,8 @@ void test_trainer() {
     // Set one weight wrong
     network.layers[0].weights[0] = 1;
 
-    calculate_batch_slope(&trainer, 4, &xor_inputs[0][0], &xor_expected[0][0]);
+    calculate_batch_slope_nudge_version(&trainer, 4, &xor_inputs[0][0],
+                                        &xor_expected[0][0]);
 
     TEST_FLOAT_TOL(trainer.layer_slopes[1][0], 2.5f, 1e-2f);
     TEST_FLOAT_TOL(trainer.layer_slopes[1][1], 0.5f, 1e-2f);
@@ -862,8 +865,8 @@ void test_trainer() {
         trainer.network, 4, &xor_inputs[0][0], &xor_expected[0][0]);
 
     for (unsigned i = 0; i < 100; i++) {
-      calculate_batch_slope(&trainer, 4, &xor_inputs[0][0],
-                            &xor_expected[0][0]);
+      calculate_batch_slope_nudge_version(&trainer, 4, &xor_inputs[0][0],
+                                          &xor_expected[0][0]);
       apply_slopes(&trainer, 0.1f);
 
       NNtype batch_loss = calculate_batch_network_loss(
