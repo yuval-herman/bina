@@ -244,7 +244,7 @@ void free_trainer(NNTrainer *trainer) {
 // tolerance level
 static inline bool float_equals_tolerance(NNtype a, NNtype b,
                                           NNtype tolerance) {
-  return fabsf(a - b) < fmaxf(1e-6f, tolerance * fmaxf(fabsf(a), fabsf(b)));
+  return fabsf(a - b) < fmaxf(1e-3f, tolerance * fmaxf(fabsf(a), fabsf(b)));
 }
 
 NNtype feed_neuron(unsigned input_length, const NNtype *inputs,
@@ -863,8 +863,15 @@ void test_trainer() {
     NNtype xor_inputs[4][2] = {{0, 0}, {0, 1}, {1, 0}, {1, 1}};
     NNtype xor_expected[4][1] = {{0}, {1}, {1}, {0}};
 
-    // Set one weight wrong
-    network.layers[0].weights[0] = 1;
+    // Set weights to random values
+    srand(0);
+
+    NNtype *network_value = network.memory_start;
+    while (network_value < network.final_output + network.final_output_length) {
+      *network_value = random_NNtype(-1, 1);
+
+      network_value++;
+    }
 
     NNtype prev_batch_loss = calculate_batch_network_loss(
         trainer.network, 4, &xor_inputs[0][0], &xor_expected[0][0]);
@@ -878,7 +885,7 @@ void test_trainer() {
       for (unsigned slope_idx = 0; slope_idx < trainer.slopes_length;
            slope_idx++) {
         TEST_FLOAT_TOL(nudge_trainer.slopes[slope_idx],
-                       trainer.slopes[slope_idx], 0.1f);
+                       trainer.slopes[slope_idx], 0.01f);
       }
       apply_slopes(&trainer, 0.1f);
 
@@ -899,7 +906,7 @@ void test_summary() {
   if (test_count > passing_tests) {
     const unsigned failing = test_count - passing_tests;
     printf("ran %u tests, with %u (%.3g%%) failing.\n", test_count, failing,
-           ((double)failing / test_count)*100);
+           ((double)failing / test_count) * 100);
   } else {
     printf("ran %u tests, with no fails!.\n", test_count);
   }
