@@ -334,14 +334,11 @@ NNtype calculate_batch_network_loss(NNNetwork *network, unsigned inputs_length,
   return (NNtype)avg_loss / (NNtype)inputs_length;
 }
 
-// How should this function handle NaN and infinity cropping up? Abort? This is
-// something that should be thought about.
 // `inputs` and `expected` are both 2d arrays that are expected to be in
 // contiguous memory.
-void calculate_batch_slope_nudge_version(NNTrainer *trainer,
-                                         unsigned inputs_length,
-                                         const NNtype *inputs,
-                                         const NNtype *expected) {
+void calculate_batch_slope_numeric(NNTrainer *trainer, unsigned inputs_length,
+                                   const NNtype *inputs,
+                                   const NNtype *expected) {
   assert(inputs_length && inputs);
   assert(expected);
   assert(trainer);
@@ -385,6 +382,8 @@ void calculate_batch_slope_nudge_version(NNTrainer *trainer,
 }
 
 // Calculates and applies a single backpropagation step for a batch of inputs.
+// `inputs` and `expected` are both 2d arrays that are expected to be in
+// contiguous memory.
 void batch_backpropagation_step(NNTrainer *trainer, unsigned inputs_length,
                                 const NNtype *inputs, const NNtype *expected) {
   assert(inputs_length && inputs);
@@ -850,8 +849,8 @@ void test_trainer() {
     // Set one weight wrong
     network.layers[0].weights[0] = 1;
 
-    calculate_batch_slope_nudge_version(&trainer, 4, &xor_inputs[0][0],
-                                        &xor_expected[0][0]);
+    calculate_batch_slope_numeric(&trainer, 4, &xor_inputs[0][0],
+                                  &xor_expected[0][0]);
 
     TEST_FLOAT_TOL(trainer.layer_slopes[1][0], 2.5f, 1e-6f, 1e-2f);
     TEST_FLOAT_TOL(trainer.layer_slopes[1][1], 0.5f, 1e-6f, 1e-2f);
@@ -864,8 +863,8 @@ void test_trainer() {
     NNNetwork network = {0};
     init_network(&network, 4, (unsigned[]){2, 2, 2, 2});
     network.layers[1].activation_type = NN_NO_ACTIVATION;
-    NNTrainer nudge_trainer = {0};
-    init_trainer(&nudge_trainer, &network);
+    NNTrainer numeric_trainer = {0};
+    init_trainer(&numeric_trainer, &network);
     NNTrainer trainer = {0};
     init_trainer(&trainer, &network);
 
@@ -882,25 +881,25 @@ void test_trainer() {
       network_value++;
     }
 
-    calculate_batch_slope_nudge_version(&nudge_trainer, 4, &inputs[0][0],
-                                        &expected[0][0]);
+    calculate_batch_slope_numeric(&numeric_trainer, 4, &inputs[0][0],
+                                  &expected[0][0]);
     batch_backpropagation_step(&trainer, 4, &inputs[0][0], &expected[0][0]);
 
     for (unsigned slope_idx = 0; slope_idx < trainer.slopes_length;
          slope_idx++) {
-      TEST_FLOAT_TOL(trainer.slopes[slope_idx], nudge_trainer.slopes[slope_idx],
-                     0.003f, 1e-2f);
+      TEST_FLOAT_TOL(trainer.slopes[slope_idx],
+                     numeric_trainer.slopes[slope_idx], 0.003f, 1e-2f);
     }
 
     free_network(&network);
     free_trainer(&trainer);
-    free_trainer(&nudge_trainer);
+    free_trainer(&numeric_trainer);
   }
   {
     NNNetwork network = {0};
     init_xor_network(&network);
-    NNTrainer nudge_trainer = {0};
-    init_trainer(&nudge_trainer, &network);
+    NNTrainer numeric_trainer = {0};
+    init_trainer(&numeric_trainer, &network);
     NNTrainer trainer = {0};
     init_trainer(&trainer, &network);
 
@@ -921,14 +920,14 @@ void test_trainer() {
         trainer.network, 4, &xor_inputs[0][0], &xor_expected[0][0]);
 
     for (unsigned i = 0; i < 10; i++) {
-      calculate_batch_slope_nudge_version(&nudge_trainer, 4, &xor_inputs[0][0],
-                                          &xor_expected[0][0]);
+      calculate_batch_slope_numeric(&numeric_trainer, 4, &xor_inputs[0][0],
+                                    &xor_expected[0][0]);
       batch_backpropagation_step(&trainer, 4, &xor_inputs[0][0],
                                  &xor_expected[0][0]);
 
       for (unsigned slope_idx = 0; slope_idx < trainer.slopes_length;
            slope_idx++) {
-        TEST_FLOAT_TOL(nudge_trainer.slopes[slope_idx],
+        TEST_FLOAT_TOL(numeric_trainer.slopes[slope_idx],
                        trainer.slopes[slope_idx], 1e-3f, 0.01f);
       }
       apply_slopes(&trainer, 0.1f);
@@ -941,7 +940,7 @@ void test_trainer() {
     }
 
     free_network(&network);
-    free_trainer(&nudge_trainer);
+    free_trainer(&numeric_trainer);
     free_trainer(&trainer);
   }
 }
