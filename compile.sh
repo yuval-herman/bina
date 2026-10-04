@@ -23,7 +23,7 @@ case "$mode" in
 
   production|prod|release)
     gcc "${common_flags[@]}" \
-      -O2 -DNDEBUG \
+      -O3 -DNDEBUG \
       -o main main.c -lm
     ;;
 
