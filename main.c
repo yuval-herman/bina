@@ -22,6 +22,7 @@ typedef enum {
   NN_RELU_ACTIVATION,
   NN_SIGMOID_ACTIVATION,
   NN_TANH_ACTIVATION,
+  NN_ACTIVATION_COUNT__,
 } NNActivationType;
 
 typedef enum {
@@ -29,6 +30,7 @@ typedef enum {
   NN_UNIFORM_INIT,
   NN_HE_INIT,
   NN_XAVIER_INIT,
+  NN_INIT_COUNT__,
 } NNInitType;
 
 typedef struct {
@@ -1001,6 +1003,28 @@ void test_network() {
   }
 }
 
+void compare_numeric_backprop_slopes(NNNetwork *network) {
+  NNTrainer numeric_trainer = {0};
+  init_trainer(&numeric_trainer, network);
+  NNTrainer trainer = {0};
+  init_trainer(&trainer, network);
+
+  NNtype inputs[4][2] = {{0, 0}, {0, 1}, {1, 0}, {1, 1}};
+  NNtype expected[4][2] = {{0, 0}, {1, 1}, {1, 1}, {0, 0}};
+
+  calculate_batch_slope_numeric(&numeric_trainer, 4, &inputs[0][0],
+                                &expected[0][0]);
+  batch_backpropagation_step(&trainer, 4, &inputs[0][0], &expected[0][0]);
+
+  for (unsigned slope_idx = 0; slope_idx < trainer.slopes_length; slope_idx++) {
+    TEST_FLOAT_TOL(trainer.slopes[slope_idx], numeric_trainer.slopes[slope_idx],
+                   0.003f, 1e-2f);
+  }
+
+  free_trainer(&trainer);
+  free_trainer(&numeric_trainer);
+}
+
 void test_trainer() {
   {
     NNNetwork network = {0};
@@ -1027,46 +1051,39 @@ void test_trainer() {
   {
     NNNetwork network = {0};
     init_network(&network, 4, (unsigned[]){2, 2, 2, 2});
-    for (unsigned layer_idx = 0; layer_idx < network.layers_length - 1;
-         layer_idx++) {
-      network.layers[layer_idx].init_type = NN_HE_INIT;
-    }
-    network.layers[1].activation_type = NN_NO_ACTIVATION;
-    network.layers[1].init_type = NN_XAVIER_INIT;
-    init_network_weights(&network);
 
-    // initializing the biases seperately is required because he init zeros them
-    // out which causes the numeric approach to give different results with a
-    // (0,0) input.
-    for (unsigned layer_idx = 0; layer_idx < network.layers_length;
-         layer_idx++) {
-      for (unsigned bias_idx = 0;
-           bias_idx < network.layers[layer_idx].output_length; bias_idx++) {
-        network.layers[layer_idx].biases[bias_idx] = random_NNtype(0.01f, 0.1f);
+    for (NNInitType init_type = NN_NO_INIT; init_type < NN_INIT_COUNT__;
+         init_type++) {
+      for (NNActivationType activation_type = NN_NO_ACTIVATION;
+           activation_type < NN_ACTIVATION_COUNT__; activation_type++) {
+
+        for (unsigned layer_idx = 0; layer_idx < network.layers_length - 1;
+             layer_idx++) {
+          network.layers[layer_idx].init_type = init_type;
+          network.layers[layer_idx].activation_type = activation_type;
+        }
+
+        network.layers[1].activation_type = NN_NO_ACTIVATION;
+        network.layers[1].init_type = NN_XAVIER_INIT;
+        init_network_weights(&network);
+
+        // initializing the biases seperately is required because he init zeros
+        // them out which causes the numeric approach to give different results
+        // with a (0,0) input.
+        for (unsigned layer_idx = 0; layer_idx < network.layers_length;
+             layer_idx++) {
+          for (unsigned bias_idx = 0;
+               bias_idx < network.layers[layer_idx].output_length; bias_idx++) {
+            network.layers[layer_idx].biases[bias_idx] =
+                random_NNtype(0.01f, 0.1f);
+          }
+        }
+
+        compare_numeric_backprop_slopes(&network);
       }
     }
 
-    NNTrainer numeric_trainer = {0};
-    init_trainer(&numeric_trainer, &network);
-    NNTrainer trainer = {0};
-    init_trainer(&trainer, &network);
-
-    NNtype inputs[4][2] = {{0, 0}, {0, 1}, {1, 0}, {1, 1}};
-    NNtype expected[4][2] = {{0, 0}, {1, 1}, {1, 1}, {0, 0}};
-
-    calculate_batch_slope_numeric(&numeric_trainer, 4, &inputs[0][0],
-                                  &expected[0][0]);
-    batch_backpropagation_step(&trainer, 4, &inputs[0][0], &expected[0][0]);
-
-    for (unsigned slope_idx = 0; slope_idx < trainer.slopes_length;
-         slope_idx++) {
-      TEST_FLOAT_TOL(trainer.slopes[slope_idx],
-                     numeric_trainer.slopes[slope_idx], 0.003f, 1e-2f);
-    }
-
     free_network(&network);
-    free_trainer(&trainer);
-    free_trainer(&numeric_trainer);
   }
   {
     NNNetwork network = {0};
