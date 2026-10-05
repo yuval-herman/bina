@@ -24,6 +24,7 @@ typedef enum {
 
 typedef enum {
   NN_NO_INIT = 0,
+  NN_UNIFORM_INIT,
   NN_HE_INIT,
 } NNInitType;
 
@@ -108,6 +109,17 @@ const struct {
 };
 
 static inline void noop_init(NNLayer *layer) { (void)layer; }
+
+static inline void uniform_init(NNLayer *layer) {
+  for (unsigned weight_idx = 0;
+       weight_idx < layer->output_length * layer->input_length; weight_idx++) {
+    layer->weights[weight_idx] = random_NNtype(-1, 1);
+  }
+  for (unsigned bias_idx = 0; bias_idx < layer->output_length; bias_idx++) {
+    layer->biases[bias_idx] = random_NNtype(-1, 1);
+  }
+}
+
 static inline void he_init(NNLayer *layer) {
   const NNtype boundary = sqrtf(6.0f / (NNtype)layer->input_length);
   for (unsigned weight_idx = 0;
@@ -121,6 +133,7 @@ static inline void he_init(NNLayer *layer) {
 
 const NNInitLayer init_functions[] = {
     [NN_NO_INIT] = noop_init,
+    [NN_UNIFORM_INIT] = uniform_init,
     [NN_HE_INIT] = he_init,
 };
 
@@ -176,7 +189,7 @@ bool init_network(NNNetwork *network, unsigned layers_length,
     layer->activation_type =
         i < layers_length - 2 ? NN_RELU_ACTIVATION : NN_NO_ACTIVATION;
 
-    layer->init_type = NN_HE_INIT;
+    layer->init_type = NN_UNIFORM_INIT;
   }
 
   network->final_output = network->layers[network->layers_length - 1].outputs;
@@ -846,16 +859,11 @@ void test_layer() {
         init_network(&network, 2, (unsigned[]){input_size, output_size});
         NNLayer layer = network.layers[0];
         layer.activation_type = NN_RELU_ACTIVATION;
+        layer.init_type = NN_HE_INIT;
 
         srand(0);
 
-        NNtype *network_value = network.memory_start;
-        while (network_value <
-               network.final_output + network.final_output_length) {
-          *network_value = random_NNtype(-1, 1);
-
-          network_value++;
-        }
+        init_network_weights(&network);
 
         NNtype *inputs = malloc(sizeof inputs[0] * input_size);
 
@@ -985,10 +993,25 @@ void test_trainer() {
   {
     NNNetwork network = {0};
     init_network(&network, 4, (unsigned[]){2, 2, 2, 2});
+    for (unsigned layer_idx = 0; layer_idx < network.layers_length - 1;
+         layer_idx++) {
+      network.layers[layer_idx].init_type = NN_HE_INIT;
+    }
     network.layers[1].activation_type = NN_NO_ACTIVATION;
     // TODO
     // network.layers[1].init_type = NN_XAVIER_INIT;
     init_network_weights(&network);
+
+    // initializing the biases seperately is required because he init zeros them
+    // out which causes the numeric approach to give different results with a
+    // (0,0) input.
+    for (unsigned layer_idx = 0; layer_idx < network.layers_length;
+         layer_idx++) {
+      for (unsigned bias_idx = 0;
+           bias_idx < network.layers[layer_idx].output_length; bias_idx++) {
+        network.layers[layer_idx].biases[bias_idx] = random_NNtype(0.01f, 0.1f);
+      }
+    }
 
     NNTrainer numeric_trainer = {0};
     init_trainer(&numeric_trainer, &network);
@@ -1015,8 +1038,15 @@ void test_trainer() {
   {
     NNNetwork network = {0};
     init_network(&network, 3, (unsigned[]){2, 2, 1});
+    for (unsigned layer_idx = 0; layer_idx < network.layers_length - 1;
+         layer_idx++) {
+      network.layers[layer_idx].init_type = NN_HE_INIT;
+    }
     init_network_weights(&network);
 
+    // initializing the biases seperately is required because he init zeros them
+    // out which causes the numeric approach to give different results with a
+    // (0,0) input.
     for (unsigned layer_idx = 0; layer_idx < network.layers_length;
          layer_idx++) {
       for (unsigned bias_idx = 0;
@@ -1110,12 +1140,7 @@ int main(void) {
 
   srand(0);
 
-  NNtype *network_value = network.memory_start;
-  while (network_value < network.final_output + network.final_output_length) {
-    *network_value = random_NNtype(-1, 1);
-
-    network_value++;
-  }
+  init_network_weights(&network);
 
   uint64_t backprop_min_time = UINT64_MAX;
   uint64_t apply_slope_min_time = UINT64_MAX;
