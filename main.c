@@ -270,10 +270,30 @@ NNtype feed_neuron(unsigned input_length, const NNtype *inputs,
   assert(inputs != NULL);
   assert(weights != NULL);
 
-  NNtype output = 0;
-  for (unsigned i = 0; i < input_length; i++) {
-    output += inputs[i] * weights[i];
+  // The calculation are split and recombined to take advantage of auto
+  // vectorization
+#define DRAIN_COUNT 4
+  NNtype output_drains[DRAIN_COUNT] = {0};
+
+  const unsigned full_row_inputs = input_length - input_length % DRAIN_COUNT;
+  for (unsigned i = 0; i < full_row_inputs;) {
+    for (unsigned drain_idx = 0; drain_idx < DRAIN_COUNT; drain_idx++, i++) {
+      output_drains[drain_idx] += inputs[i] * weights[i];
+    }
   }
+
+  {
+    unsigned i = full_row_inputs;
+    for (unsigned drain_idx = 0; i < input_length; drain_idx++, i++) {
+      output_drains[drain_idx] += inputs[i] * weights[i];
+    }
+  }
+
+  NNtype output = 0;
+  for (unsigned i = 0; i < DRAIN_COUNT; i++) {
+    output += output_drains[i];
+  }
+#undef DRAIN_COUNT
 
   // TODO save value vefore activation as well for derivative calculation
   if (activation)
