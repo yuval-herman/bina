@@ -20,12 +20,15 @@ typedef NNtype (*NNactivation)(NNtype);
 typedef enum {
   NN_NO_ACTIVATION = 0,
   NN_RELU_ACTIVATION,
+  NN_SIGMOID_ACTIVATION,
+  NN_TANH_ACTIVATION,
 } NNActivationType;
 
 typedef enum {
   NN_NO_INIT = 0,
   NN_UNIFORM_INIT,
   NN_HE_INIT,
+  NN_XAVIER_INIT,
 } NNInitType;
 
 typedef struct {
@@ -98,6 +101,20 @@ static inline NNtype relu_derivative(NNtype value) {
   return value <= 0 ? 0 : 1;
 }
 
+static inline NNtype sigmoid_activation(NNtype value) {
+  return 1.0f / (1.0f + expf(-value));
+}
+
+static inline NNtype sigmoid_derivative(NNtype value) {
+  return value * (1.0f - value);
+}
+
+static inline NNtype tanh_activation(NNtype value) { return tanhf(value); }
+
+static inline NNtype tanh_derivative(NNtype value) {
+  return 1.0f - (value * value);
+}
+
 const struct {
   NNactivation activation;
   NNactivation derivative;
@@ -106,6 +123,10 @@ const struct {
                           .derivative = noop_derivative},
     [NN_RELU_ACTIVATION] = {.activation = relu_activation,
                             .derivative = relu_derivative},
+    [NN_SIGMOID_ACTIVATION] = {.activation = sigmoid_activation,
+                               .derivative = sigmoid_derivative},
+    [NN_TANH_ACTIVATION] = {.activation = tanh_activation,
+                            .derivative = tanh_derivative},
 };
 
 static inline void noop_init(NNLayer *layer) { (void)layer; }
@@ -131,10 +152,23 @@ static inline void he_init(NNLayer *layer) {
   }
 }
 
+static inline void xavier_init(NNLayer *layer) {
+  const NNtype boundary = sqrtf(
+      6.0f / ((NNtype)layer->input_length + (NNtype)layer->output_length));
+  for (unsigned weight_idx = 0;
+       weight_idx < layer->output_length * layer->input_length; weight_idx++) {
+    layer->weights[weight_idx] = random_NNtype(-boundary, boundary);
+  }
+  for (unsigned bias_idx = 0; bias_idx < layer->output_length; bias_idx++) {
+    layer->biases[bias_idx] = 0;
+  }
+}
+
 const NNInitLayer init_functions[] = {
     [NN_NO_INIT] = noop_init,
     [NN_UNIFORM_INIT] = uniform_init,
     [NN_HE_INIT] = he_init,
+    [NN_XAVIER_INIT] = xavier_init,
 };
 
 // layers_neurons is a count of how many outputs a layer has. The first items in
@@ -998,8 +1032,7 @@ void test_trainer() {
       network.layers[layer_idx].init_type = NN_HE_INIT;
     }
     network.layers[1].activation_type = NN_NO_ACTIVATION;
-    // TODO
-    // network.layers[1].init_type = NN_XAVIER_INIT;
+    network.layers[1].init_type = NN_XAVIER_INIT;
     init_network_weights(&network);
 
     // initializing the biases seperately is required because he init zeros them
