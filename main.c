@@ -150,6 +150,13 @@ bool init_network(NNNetwork *network, unsigned layers_length,
     layer->activation_type = i < layers_length - 2 ? NN_RELU : NN_NO_ACTIVATION;
   }
 
+  NNtype *network_value = network->memory_start;
+  while (network_value < network->final_output + network->final_output_length) {
+    *network_value = random_NNtype(-1, 1);
+
+    network_value++;
+  }
+
   network->final_output = network->layers[network->layers_length - 1].outputs;
   network->final_output_length =
       network->layers[network->layers_length - 1].output_length;
@@ -952,16 +959,6 @@ void test_trainer() {
     NNtype inputs[4][2] = {{0, 0}, {0, 1}, {1, 0}, {1, 1}};
     NNtype expected[4][2] = {{0, 0}, {1, 1}, {1, 1}, {0, 0}};
 
-    // Set weights to random values
-    srand(0);
-
-    NNtype *network_value = network.memory_start;
-    while (network_value < network.final_output + network.final_output_length) {
-      *network_value = random_NNtype(-1, 1);
-
-      network_value++;
-    }
-
     calculate_batch_slope_numeric(&numeric_trainer, 4, &inputs[0][0],
                                   &expected[0][0]);
     batch_backpropagation_step(&trainer, 4, &inputs[0][0], &expected[0][0]);
@@ -978,7 +975,7 @@ void test_trainer() {
   }
   {
     NNNetwork network = {0};
-    init_xor_network(&network);
+    init_network(&network, 3, (unsigned[]){2, 2, 1});
     NNTrainer numeric_trainer = {0};
     init_trainer(&numeric_trainer, &network);
     NNTrainer trainer = {0};
@@ -986,16 +983,6 @@ void test_trainer() {
 
     NNtype xor_inputs[4][2] = {{0, 0}, {0, 1}, {1, 0}, {1, 1}};
     NNtype xor_expected[4][1] = {{0}, {1}, {1}, {0}};
-
-    // Set weights to random values
-    srand(0);
-
-    NNtype *network_value = network.memory_start;
-    while (network_value < network.final_output + network.final_output_length) {
-      *network_value = random_NNtype(-1, 1);
-
-      network_value++;
-    }
 
     NNtype prev_batch_loss = calculate_batch_network_loss(
         trainer.network, 4, &xor_inputs[0][0], &xor_expected[0][0]);
