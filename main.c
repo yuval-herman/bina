@@ -777,6 +777,55 @@ void test_layer() {
 
     free_network(&network);
   }
+  {
+    for (unsigned input_size = 1; input_size < 50; input_size++) {
+      for (unsigned output_size = 1; output_size < 50; output_size++) {
+        NNNetwork network = {0};
+        init_network(&network, 2, (unsigned[]){input_size, output_size});
+        NNLayer layer = network.layers[0];
+        layer.activation_type = NN_RELU;
+
+        srand(0);
+
+        NNtype *network_value = network.memory_start;
+        while (network_value <
+               network.final_output + network.final_output_length) {
+          *network_value = random_NNtype(-1, 1);
+
+          network_value++;
+        }
+
+        NNtype *inputs = malloc(sizeof inputs[0] * input_size);
+
+        for (unsigned i = 0; i < input_size; i++) {
+          inputs[i] = random_NNtype(-1, 1);
+        }
+
+        feed_layer(&layer, inputs);
+
+        // Simple vector multiplication for test
+
+        for (unsigned output_idx = 0; output_idx < output_size; output_idx++) {
+          // Using double for higer prescision while testing
+          double output = 0;
+          for (unsigned input_idx = 0; input_idx < input_size; input_idx++) {
+            output +=
+                (double)inputs[input_idx] *
+                (double)layer.weights[input_idx + input_size * output_idx];
+          }
+          output =
+              (double)activation_functions[layer.activation_type].activation(
+                  (NNtype)output + layer.biases[output_idx]);
+
+          TEST_FLOAT_TOL(layer.outputs[output_idx], (NNtype)output, 1e-5f,
+                         1e-4f);
+        }
+
+        free_network(&network);
+        free(inputs);
+      }
+    }
+  }
 }
 
 bool init_xor_network(NNNetwork *network) {
