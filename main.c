@@ -1154,15 +1154,7 @@ bool test_summary() {
   }
 }
 
-int main(void) {
-#ifndef NDEBUG
-  test_neuron();
-  test_layer();
-  test_network();
-  test_trainer();
-  if (!test_summary())
-    return 1;
-#else
+void bench_and_print() {
   const unsigned batch_length = 10;
   const NNtype learning_rate = 0.1f;
 
@@ -1248,5 +1240,17 @@ int main(void) {
 
   free_network(&network);
   free_trainer(&trainer);
+}
+
+int main(void) {
+#ifndef NDEBUG
+  test_neuron();
+  test_layer();
+  test_network();
+  test_trainer();
+  if (!test_summary())
+    return 1;
+#else
+  bench_and_print();
 #endif
 }
