@@ -19,16 +19,22 @@ typedef NNtype (*NNactivation)(NNtype);
 
 typedef enum {
   NN_NO_ACTIVATION = 0,
-  NN_RELU,
+  NN_RELU_ACTIVATION,
 } NNActivationType;
+
+typedef enum {
+  NN_NO_INIT = 0,
+  NN_HE_INIT,
+} NNInitType;
 
 typedef struct {
   NNtype *weights;
   unsigned input_length; // weights length are input * output
   NNtype *biases;
   NNtype *outputs;
-  unsigned output_length;           // biases and outputs have the same length
-  NNActivationType activation_type; // Pass NULL here to have no activation
+  unsigned output_length; // biases and outputs have the same length
+  NNActivationType activation_type;
+  NNInitType init_type;
 } NNLayer;
 
 typedef struct {
@@ -54,6 +60,13 @@ typedef struct {
   // This array containes pointers to the start of each layer's delta values.
   NNtype **layer_deltas;
 } NNTrainer;
+
+static inline NNtype *get_weight(NNLayer *layer, unsigned output_idx,
+                                 unsigned weight_idx) {
+  return layer->weights + output_idx * layer->input_length + weight_idx;
+}
+
+typedef void (*NNInitLayer)(NNLayer *layer);
 
 static inline NNtype random_NNtype(NNtype min, NNtype max) {
   return min +
@@ -90,13 +103,26 @@ const struct {
 } activation_functions[] = {
     [NN_NO_ACTIVATION] = {.activation = noop_activation,
                           .derivative = noop_derivative},
-    [NN_RELU] = {.activation = relu_activation, .derivative = relu_derivative},
+    [NN_RELU_ACTIVATION] = {.activation = relu_activation,
+                            .derivative = relu_derivative},
 };
 
-static inline NNtype *get_weight(NNLayer *layer, unsigned output_idx,
-                                 unsigned weight_idx) {
-  return layer->weights + output_idx * layer->input_length + weight_idx;
+static inline void noop_init(NNLayer *layer) { (void)layer; }
+static inline void he_init(NNLayer *layer) {
+  const NNtype boundary = sqrtf(6.0f / (NNtype)layer->input_length);
+  for (unsigned weight_idx = 0;
+       weight_idx < layer->output_length * layer->input_length; weight_idx++) {
+    layer->weights[weight_idx] = random_NNtype(-boundary, boundary);
+  }
+  for (unsigned bias_idx = 0; bias_idx < layer->output_length; bias_idx++) {
+    layer->biases[bias_idx] = 0;
+  }
 }
+
+const NNInitLayer init_functions[] = {
+    [NN_NO_INIT] = noop_init,
+    [NN_HE_INIT] = he_init,
+};
 
 // layers_neurons is a count of how many outputs a layer has. The first items in
 // that array is the amount of inputs the network may accept, then the rest of
@@ -147,20 +173,29 @@ bool init_network(NNNetwork *network, unsigned layers_length,
     layer->outputs = memory;
     memory += output_length;
 
-    layer->activation_type = i < layers_length - 2 ? NN_RELU : NN_NO_ACTIVATION;
-  }
+    layer->activation_type =
+        i < layers_length - 2 ? NN_RELU_ACTIVATION : NN_NO_ACTIVATION;
 
-  NNtype *network_value = network->memory_start;
-  while (network_value < network->final_output + network->final_output_length) {
-    *network_value = random_NNtype(-1, 1);
-
-    network_value++;
+    layer->init_type = NN_HE_INIT;
   }
 
   network->final_output = network->layers[network->layers_length - 1].outputs;
   network->final_output_length =
       network->layers[network->layers_length - 1].output_length;
   return true;
+}
+
+// Caller is responsible to call srand(0)
+void init_layer_weights(NNLayer *layer) {
+  init_functions[layer->init_type](layer);
+}
+
+// Caller is responsible to call srand(0)
+void init_network_weights(NNNetwork *network) {
+  for (unsigned layer_idx = 0; layer_idx < network->layers_length;
+       layer_idx++) {
+    init_layer_weights(&network->layers[layer_idx]);
+  }
 }
 
 void print_network(NNNetwork network) {
@@ -769,7 +804,7 @@ void test_layer() {
     NNNetwork network = {0};
     init_network(&network, 2, (unsigned[]){3, 2});
     NNLayer layer = network.layers[0];
-    layer.activation_type = NN_RELU;
+    layer.activation_type = NN_RELU_ACTIVATION;
 
     for (unsigned i = 0; i < layer.output_length * layer.input_length; i++) {
       layer.weights[i] = -1;
@@ -810,7 +845,7 @@ void test_layer() {
         NNNetwork network = {0};
         init_network(&network, 2, (unsigned[]){input_size, output_size});
         NNLayer layer = network.layers[0];
-        layer.activation_type = NN_RELU;
+        layer.activation_type = NN_RELU_ACTIVATION;
 
         srand(0);
 
@@ -951,6 +986,10 @@ void test_trainer() {
     NNNetwork network = {0};
     init_network(&network, 4, (unsigned[]){2, 2, 2, 2});
     network.layers[1].activation_type = NN_NO_ACTIVATION;
+    // TODO
+    // network.layers[1].init_type = NN_XAVIER_INIT;
+    init_network_weights(&network);
+
     NNTrainer numeric_trainer = {0};
     init_trainer(&numeric_trainer, &network);
     NNTrainer trainer = {0};
@@ -976,6 +1015,16 @@ void test_trainer() {
   {
     NNNetwork network = {0};
     init_network(&network, 3, (unsigned[]){2, 2, 1});
+    init_network_weights(&network);
+
+    for (unsigned layer_idx = 0; layer_idx < network.layers_length;
+         layer_idx++) {
+      for (unsigned bias_idx = 0;
+           bias_idx < network.layers[layer_idx].output_length; bias_idx++) {
+        network.layers[layer_idx].biases[bias_idx] = random_NNtype(0.01f, 0.1f);
+      }
+    }
+
     NNTrainer numeric_trainer = {0};
     init_trainer(&numeric_trainer, &network);
     NNTrainer trainer = {0};
