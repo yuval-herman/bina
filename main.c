@@ -122,6 +122,7 @@ static char *activation_function_name(NNActivationType activation_type) {
   switch (activation_type) {
   default:
     assert(!"impossible activation type");
+    return "impossible activation type";
 
   case NN_NO_ACTIVATION:
     return "no activation";
@@ -186,6 +187,7 @@ static char *init_function_name(NNInitType init_type) {
   switch (init_type) {
   default:
     assert(!"impossible init type");
+    return "impossible init type";
 
   case NN_UNIFORM_INIT:
     return "uniform";
@@ -682,32 +684,32 @@ static unsigned test_check_count = 0;
 static unsigned test_passing = 0;
 static unsigned test_count = 0;
 
-static bool __test_block_latch;
-static unsigned __test_block_failing;
+static bool test_block_latch_;
+static unsigned test_block_failing_;
 
 #define TEST_BLOCK(name, ...)                                                  \
-  for (__test_block_latch = (__test_block_failing = 0, test_count++, true);    \
-       __test_block_latch;                                                     \
-       __test_block_latch = false,                                             \
-      __test_block_failing == 0                                                \
-           ? (void)test_passing++                                                    \
+  for (test_block_latch_ = (test_block_failing_ = 0, test_count++, true);      \
+       test_block_latch_;                                                      \
+       test_block_latch_ = false,                                              \
+      test_block_failing_ == 0                                                 \
+           ? (void)test_passing++                                              \
            : printf(ANSI_YELLOW name                                           \
                     " test failed! (line %d)\n%u checks are failing"           \
                     "\n" ANSI_RESET,                                           \
-                    ##__VA_ARGS__, __LINE__, __test_block_failing))
+                    ##__VA_ARGS__, __LINE__, test_block_failing_))
 
-static bool __test_step_latch;
-static unsigned __test_step_failing;
+static bool test_step_latch_;
+static unsigned test_step_failing_;
 
 #define TEST_STEP(step_name, ...)                                              \
-  for (__test_step_latch = (__test_step_failing = 0, true); __test_step_latch; \
-       __test_step_latch = false,                                              \
-      __test_step_failing == 0                                                 \
+  for (test_step_latch_ = (test_step_failing_ = 0, true); test_step_latch_;    \
+       test_step_latch_ = false,                                               \
+      test_step_failing_ == 0                                                  \
            ? 0                                                                 \
            : printf(ANSI_YELLOW step_name                                      \
                     " test step failed! (line %d)\n%u checks are failing"      \
                     "\n" ANSI_RESET,                                           \
-                    ##__VA_ARGS__, __LINE__, __test_step_failing))
+                    ##__VA_ARGS__, __LINE__, test_step_failing_))
 
 #define CHECK_REGISTER(got, expected, pass, format)                            \
   do {                                                                         \
@@ -715,10 +717,10 @@ static unsigned __test_step_failing;
     if (pass)                                                                  \
       test_checks_passing++;                                                   \
     else {                                                                     \
-      if (__test_block_latch)                                                  \
-        __test_block_failing++;                                                \
-      if (__test_step_latch)                                                   \
-        __test_step_failing++;                                                 \
+      if (test_block_latch_)                                                   \
+        test_block_failing_++;                                                 \
+      if (test_step_latch_)                                                    \
+        test_step_failing_++;                                                  \
       printf(ANSI_RED "Got incorrect value! (line %d) expected " format        \
                       " but got " format "\n" ANSI_RESET,                      \
              __LINE__, (expected), (got));                                     \
