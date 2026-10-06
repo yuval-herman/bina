@@ -647,14 +647,14 @@ void apply_slopes(NNTrainer *trainer, NNtype learning_rate) {
   }
 }
 
-unsigned passing_tests = 0;
+unsigned tests_passing = 0;
 unsigned test_count = 0;
 
 #define TEST_REGISTER(got, expected, pass, format)                             \
   do {                                                                         \
     test_count++;                                                              \
     if (pass)                                                                  \
-      passing_tests++;                                                         \
+      tests_passing++;                                                         \
     else                                                                       \
       printf(ANSI_RED "Got incorrect value! (line %d) expected " format        \
                       " but got " format "\n" ANSI_RESET,                      \
@@ -1145,8 +1145,8 @@ void test_trainer() {
 }
 
 bool test_summary() {
-  if (test_count > passing_tests) {
-    const unsigned failing = test_count - passing_tests;
+  if (test_count > tests_passing) {
+    const unsigned failing = test_count - tests_passing;
     printf("ran %u tests, with %u (%.3g%%) failing.\n", test_count, failing,
            ((double)failing / test_count) * 100);
     return false;
