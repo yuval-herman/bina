@@ -524,6 +524,7 @@ void batch_backpropagation_step(NNTrainer *trainer, unsigned batch_length,
     // delta for the output layer, the last layer
     for (unsigned neuron_idx = 0; neuron_idx < network->final_output_length;
          neuron_idx++) {
+      const NNLayer *layer = &network->layers[network->layers_length - 1];
       const NNtype neuron_expected =
           expected[network->final_output_length * input_batch_idx + neuron_idx];
       const NNtype neuron_output = network->final_output[neuron_idx];
@@ -531,6 +532,10 @@ void batch_backpropagation_step(NNTrainer *trainer, unsigned batch_length,
 
       layer_deltas[neuron_idx] = (neuron_output - neuron_expected) * 2 /
                                  (NNtype)network->final_output_length;
+
+      layer_deltas[neuron_idx] *=
+          activation_functions[layer->activation_type].derivative(
+              layer->outputs[neuron_idx]);
     }
 
     // deltas for the rest of the layers
