@@ -1054,19 +1054,17 @@ void test_trainer() {
     NNNetwork network = {0};
     init_network(&network, 4, (unsigned[]){2, 2, 2, 2});
 
-    for (NNInitType init_type = NN_NO_INIT; init_type < NN_INIT_COUNT__;
+    for (NNInitType init_type = NN_NO_INIT + 1; init_type < NN_INIT_COUNT__;
          init_type++) {
-      for (NNActivationType activation_type = NN_NO_ACTIVATION;
+      for (NNActivationType activation_type = NN_NO_ACTIVATION + 1;
            activation_type < NN_ACTIVATION_COUNT__; activation_type++) {
 
-        for (unsigned layer_idx = 0; layer_idx < network.layers_length - 1;
+        for (unsigned layer_idx = 0; layer_idx < network.layers_length;
              layer_idx++) {
           network.layers[layer_idx].init_type = init_type;
           network.layers[layer_idx].activation_type = activation_type;
         }
 
-        network.layers[1].activation_type = NN_NO_ACTIVATION;
-        network.layers[1].init_type = NN_XAVIER_INIT;
         init_network_weights(&network);
 
         // initializing the biases seperately is required because he init zeros
