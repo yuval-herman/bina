@@ -34,6 +34,12 @@ typedef enum {
   NN_INIT_COUNT__,
 } NNInitType;
 
+typedef enum {
+  NN_MSE_LOSS = 0,
+  NN_CROSS_ENTROPY_LOSS,
+  NN_LOSS_COUNT__,
+} NNLossType;
+
 typedef struct {
   NNtype *weights;
   unsigned input_length; // weights length are input * output
@@ -62,10 +68,13 @@ typedef struct {
   unsigned slopes_length;
   NNtype *deltas;
   unsigned deltas_length;
+  NNtype *network_loss;
+  unsigned network_loss_length;
   // This array containes pointers to the start of each layer's slope values.
   NNtype **layer_slopes;
   // This array containes pointers to the start of each layer's delta values.
   NNtype **layer_deltas;
+  NNLossType loss_type;
 } NNTrainer;
 
 static inline NNtype *get_weight(NNLayer *layer, unsigned output_idx,
@@ -74,6 +83,11 @@ static inline NNtype *get_weight(NNLayer *layer, unsigned output_idx,
 }
 
 typedef void (*NNInitLayer)(NNLayer *layer);
+typedef NNtype (*NNComputeLoss)(unsigned input_length, const NNtype *values,
+                                const NNtype *expected);
+// Loss derivative functions overwrite the `values` array
+typedef void (*NNComputeLossDerivative)(unsigned input_length, NNtype *values,
+                                        const NNtype *expected);
 
 static inline NNtype random_NNtype(NNtype min, NNtype max) {
   return min +
@@ -205,9 +219,130 @@ const NNInitLayer init_functions[] = {
     [NN_XAVIER_INIT] = xavier_init,
 };
 
-// layers_neurons is a count of how many outputs a layer has. The first items in
-// that array is the amount of inputs the network may accept, then the rest of
-// the numbers are the outputs for every sequential layer.
+// `values` is modified in place. If you need the values unaltered pass a copy
+// here.
+static inline void softmax(unsigned inputs_length, NNtype *values) {
+  NNtype max = -INFINITY;
+  for (unsigned i = 0; i < inputs_length; i++) {
+    if (values[i] > max)
+      max = values[i];
+  }
+
+  for (unsigned i = 0; i < inputs_length; i++) {
+    values[i] = expf(values[i] - max);
+  }
+
+  NNtype sum = 0;
+  for (unsigned i = 0; i < inputs_length; i++) {
+    sum += values[i];
+  }
+
+  for (unsigned i = 0; i < inputs_length; i++) {
+    values[i] = values[i] / sum;
+  }
+}
+
+static inline NNtype mse_loss(unsigned inputs_length, const NNtype *values,
+                              const NNtype *expected) {
+  assert(inputs_length);
+  assert(values);
+  assert(expected);
+
+  NNtype loss = 0;
+  for (unsigned i = 0; i < inputs_length; i++) {
+    const NNtype input_loss = values[i] - expected[i];
+    loss += input_loss * input_loss;
+  }
+
+  return loss / (NNtype)inputs_length;
+}
+
+static inline void mse_loss_derivative(unsigned inputs_length, NNtype *values,
+                                       const NNtype *expected) {
+  assert(inputs_length);
+  assert(values);
+  assert(expected);
+
+  for (unsigned i = 0; i < inputs_length; i++) {
+    values[i] = (values[i] - expected[i]) * 2 / (NNtype)inputs_length;
+  }
+}
+
+static inline NNtype cross_entropy_loss(unsigned inputs_length,
+                                        const NNtype *values,
+                                        const NNtype *expected) {
+  assert(inputs_length);
+  assert(values);
+  assert(expected);
+
+  // combine results with softmax
+  NNtype max = -INFINITY;
+  for (unsigned i = 0; i < inputs_length; i++) {
+    if (values[i] > max)
+      max = values[i];
+  }
+
+  NNtype sum = 0;
+  for (unsigned i = 0; i < inputs_length; i++) {
+    sum += expf(values[i] - max);
+  }
+
+  for (unsigned i = 0; i < inputs_length; i++) {
+    if (expected[i] == 1) {
+      return -(values[i] - max) + logf(sum);
+    }
+  }
+  assert(
+      !"cross entropy loss expects one element in the expected array to be 1");
+  return NAN;
+}
+
+static inline void cross_entropy_loss_derivative(unsigned inputs_length,
+                                                 NNtype *values,
+                                                 const NNtype *expected) {
+  assert(inputs_length);
+  assert(values);
+  assert(expected);
+
+  softmax(inputs_length, values);
+
+  for (unsigned i = 0; i < inputs_length; i++) {
+    values[i] = values[i] - expected[i];
+  }
+}
+
+static char *loss_function_name(NNLossType loss_type) {
+  switch (loss_type) {
+  default:
+    assert(!"impossible loss type");
+    return "impossible loss type";
+
+  case NN_MSE_LOSS:
+    return "mse";
+  case NN_CROSS_ENTROPY_LOSS:
+    return "cross entropy";
+  }
+}
+
+const struct {
+  NNComputeLoss loss;
+  NNComputeLossDerivative derivative;
+} loss_functions[] = {
+    [NN_MSE_LOSS] =
+        {
+            .loss = mse_loss,
+            .derivative = mse_loss_derivative,
+        },
+    [NN_CROSS_ENTROPY_LOSS] =
+        {
+            .loss = cross_entropy_loss,
+            .derivative = cross_entropy_loss_derivative,
+        },
+};
+
+// layers_neurons is a count of how many outputs a layer has. The first items
+// in that array is the amount of inputs the network may accept, then the rest
+// of the numbers are the outputs for every sequential layer.
 bool init_network(NNNetwork *network, unsigned layers_length,
                   unsigned *layers_neurons) {
   assert(layers_length >= 2 && "A network must be at least one layer long");
@@ -348,11 +483,23 @@ bool init_trainer(NNTrainer *trainer, NNNetwork *network) {
     return false;
   }
 
+  trainer->network_loss =
+      malloc(network->final_output_length * sizeof(*trainer->network_loss));
+
+  if (trainer->network_loss == NULL) {
+    free(slopes_memory);
+    free(deltas_memory);
+    free(trainer->layer_slopes);
+    free(trainer->layer_deltas);
+    return false;
+  }
+
   trainer->network = network;
   trainer->slopes = slopes_memory;
   trainer->deltas = deltas_memory;
   trainer->slopes_length = slopes_length;
   trainer->deltas_length = deltas_length;
+  trainer->network_loss_length = network->final_output_length;
 
   trainer->layer_slopes[0] = trainer->slopes;
   trainer->layer_deltas[0] = trainer->deltas;
@@ -366,6 +513,9 @@ bool init_trainer(NNTrainer *trainer, NNNetwork *network) {
     trainer->layer_deltas[i + 1] = trainer->layer_deltas[i] + l.output_length;
   }
 
+  // mse is the default loss type
+  trainer->loss_type = NN_MSE_LOSS;
+
   return true;
 }
 
@@ -374,6 +524,7 @@ void free_trainer(NNTrainer *trainer) {
   free(trainer->deltas);
   free(trainer->layer_slopes);
   free(trainer->layer_deltas);
+  free(trainer->network_loss);
   *trainer = (NNTrainer){0};
 }
 
@@ -452,33 +603,16 @@ void feed_network(NNNetwork *network, const NNtype *inputs) {
   }
 }
 
-NNtype calculate_loss(unsigned inputs_length, const NNtype *values,
-                      const NNtype *expected) {
-  assert(inputs_length);
-  assert(values);
-  assert(expected);
-
-  NNtype loss = 0;
-  // If the loss is huge, we might to infinity in this loop. This is actually
-  // fine, loss should go down, not up, so going to infinity means something is
-  // wrong, and its a good place to catch that.
-  for (unsigned i = 0; i < inputs_length; i++) {
-    const NNtype input_loss = values[i] - expected[i];
-    loss += input_loss * input_loss;
-  }
-
-  return loss / (NNtype)inputs_length;
-}
-
 // `inputs` and `expected` are both 2d arrays that are expected to be in
 // contiguous memory.
-NNtype calculate_batch_network_loss(NNNetwork *network, unsigned inputs_length,
+NNtype calculate_batch_network_loss(NNNetwork *network, NNLossType loss_type,
+                                    unsigned inputs_length,
                                     const NNtype *inputs,
                                     const NNtype *expected) {
   double avg_loss = 0;
   for (unsigned i = 0; i < inputs_length; i++) {
     feed_network(network, &inputs[i * network->layers[0].input_length]);
-    avg_loss += (double)calculate_loss(
+    avg_loss += (double)loss_functions[loss_type].loss(
         network->final_output_length, network->final_output,
         &expected[i * network->final_output_length]);
   }
@@ -497,8 +631,8 @@ void calculate_batch_slope_numeric(NNTrainer *trainer, unsigned inputs_length,
   assert(network && "trainer must be initialised before training");
   const NNtype nudge_value = 1e-4f;
 
-  double avg_loss_before =
-      calculate_batch_network_loss(network, inputs_length, inputs, expected);
+  double avg_loss_before = calculate_batch_network_loss(
+      network, trainer->loss_type, inputs_length, inputs, expected);
 
   for (unsigned layer_idx = 0; layer_idx < network->layers_length;
        layer_idx++) {
@@ -510,7 +644,7 @@ void calculate_batch_slope_numeric(NNTrainer *trainer, unsigned inputs_length,
       layer.weights[weight_idx] += nudge_value;
 
       double avg_loss_after = calculate_batch_network_loss(
-          network, inputs_length, inputs, expected);
+          network, trainer->loss_type, inputs_length, inputs, expected);
 
       trainer->layer_slopes[layer_idx][weight_idx] =
           (NNtype)(avg_loss_after - avg_loss_before) / nudge_value;
@@ -522,7 +656,7 @@ void calculate_batch_slope_numeric(NNTrainer *trainer, unsigned inputs_length,
       layer.biases[bias_idx] += nudge_value;
 
       double avg_loss_after = calculate_batch_network_loss(
-          network, inputs_length, inputs, expected);
+          network, trainer->loss_type, inputs_length, inputs, expected);
 
       trainer->layer_slopes[layer_idx][weights_length + bias_idx] =
           (NNtype)(avg_loss_after - avg_loss_before) / nudge_value;
@@ -554,16 +688,20 @@ void batch_backpropagation_step(NNTrainer *trainer, unsigned batch_length,
     feed_network(network, input_batch);
 
     // delta for the output layer, the last layer
+    assert(trainer->network_loss_length == network->final_output_length);
+    memcpy(trainer->network_loss, network->final_output,
+           trainer->network_loss_length * sizeof(*trainer->network_loss));
+
+    loss_functions[trainer->loss_type].derivative(
+        trainer->network_loss_length, trainer->network_loss,
+        expected + network->final_output_length * input_batch_idx);
+
     for (unsigned neuron_idx = 0; neuron_idx < network->final_output_length;
          neuron_idx++) {
       const NNLayer *layer = &network->layers[network->layers_length - 1];
-      const NNtype neuron_expected =
-          expected[network->final_output_length * input_batch_idx + neuron_idx];
-      const NNtype neuron_output = network->final_output[neuron_idx];
       NNtype *layer_deltas = trainer->layer_deltas[network->layers_length - 1];
 
-      layer_deltas[neuron_idx] = (neuron_output - neuron_expected) * 2 /
-                                 (NNtype)network->final_output_length;
+      layer_deltas[neuron_idx] = trainer->network_loss[neuron_idx];
 
       layer_deltas[neuron_idx] *=
           activation_functions[layer->activation_type].derivative(
@@ -598,8 +736,8 @@ void batch_backpropagation_step(NNTrainer *trainer, unsigned batch_length,
       }
     }
 
-    // first layer needs special handling because we don't have the input saved
-    // within the layers
+    // first layer needs special handling because we don't have the input
+    // saved within the layers
 
     {
       const unsigned layer_idx = 0;
@@ -1066,7 +1204,7 @@ void test_network() {
 
       CHECK_FLOAT(network.final_output[0], xor_expected[i]);
 
-      NNtype loss = calculate_loss(1, network.final_output, &xor_expected[i]);
+      NNtype loss = mse_loss(1, network.final_output, &xor_expected[i]);
 
       CHECK_FLOAT(loss, 0.0f);
     }
@@ -1077,7 +1215,7 @@ void test_network() {
     for (unsigned i = 0; i < ARR_LENGTH(xor_inputs); i++) {
       feed_network(&network, xor_inputs[i]);
 
-      NNtype loss = calculate_loss(1, network.final_output, &xor_expected[i]);
+      NNtype loss = mse_loss(1, network.final_output, &xor_expected[i]);
 
       CHECK_FLOAT(loss, expected_loss[i]);
     }
@@ -1086,14 +1224,17 @@ void test_network() {
   }
 }
 
-void compare_numeric_backprop_slopes(NNNetwork *network) {
+void compare_numeric_backprop_slopes(NNNetwork *network, NNLossType loss_type) {
   NNTrainer numeric_trainer = {0};
   init_trainer(&numeric_trainer, network);
   NNTrainer trainer = {0};
   init_trainer(&trainer, network);
 
+  numeric_trainer.loss_type = loss_type;
+  trainer.loss_type = loss_type;
+
   NNtype inputs[4][2] = {{0, 0}, {0, 1}, {1, 0}, {1, 1}};
-  NNtype expected[4][2] = {{0, 0}, {1, 1}, {1, 1}, {0, 0}};
+  NNtype expected[4][2] = {{1, 0}, {0, 1}, {0, 1}, {0, 1}};
 
   calculate_batch_slope_numeric(&numeric_trainer, 4, &inputs[0][0],
                                 &expected[0][0]);
@@ -1131,7 +1272,7 @@ void test_trainer() {
     free_network(&network);
     free_trainer(&trainer);
   }
-  TEST_BLOCK("random activation and init functions in trainer") {
+  TEST_BLOCK("random activation, init and loss functions in trainer") {
     NNNetwork network = {0};
     init_network(&network, 4, (unsigned[]){2, 2, 2, 2});
 
@@ -1139,32 +1280,36 @@ void test_trainer() {
          init_type++) {
       for (NNActivationType activation_type = NN_NO_ACTIVATION;
            activation_type < NN_ACTIVATION_COUNT__; activation_type++) {
-        TEST_STEP("activation = %s init = %s",
-                  activation_function_name(activation_type),
-                  init_function_name(init_type)) {
+        for (NNLossType loss_type = NN_MSE_LOSS; loss_type < NN_LOSS_COUNT__;
+             loss_type++) {
+          TEST_STEP("activation = %s init = %s loss = %s",
+                    activation_function_name(activation_type),
+                    init_function_name(init_type),
+                    loss_function_name(loss_type)) {
 
-          for (unsigned layer_idx = 0; layer_idx < network.layers_length;
-               layer_idx++) {
-            network.layers[layer_idx].init_type = init_type;
-            network.layers[layer_idx].activation_type = activation_type;
-          }
-
-          init_network_weights(&network);
-
-          // initializing the biases seperately is required because he init
-          // zeros them out which causes the numeric approach to give different
-          // results with a (0,0) input.
-          for (unsigned layer_idx = 0; layer_idx < network.layers_length;
-               layer_idx++) {
-            for (unsigned bias_idx = 0;
-                 bias_idx < network.layers[layer_idx].output_length;
-                 bias_idx++) {
-              network.layers[layer_idx].biases[bias_idx] =
-                  random_NNtype(0.01f, 0.1f);
+            for (unsigned layer_idx = 0; layer_idx < network.layers_length;
+                 layer_idx++) {
+              network.layers[layer_idx].init_type = init_type;
+              network.layers[layer_idx].activation_type = activation_type;
             }
-          }
 
-          compare_numeric_backprop_slopes(&network);
+            init_network_weights(&network);
+
+            // initializing the biases seperately is required because he init
+            // zeros them out which causes the numeric approach to give
+            // different results with a (0,0) input.
+            for (unsigned layer_idx = 0; layer_idx < network.layers_length;
+                 layer_idx++) {
+              for (unsigned bias_idx = 0;
+                   bias_idx < network.layers[layer_idx].output_length;
+                   bias_idx++) {
+                network.layers[layer_idx].biases[bias_idx] =
+                    random_NNtype(0.01f, 0.1f);
+              }
+            }
+
+            compare_numeric_backprop_slopes(&network, loss_type);
+          }
         }
       }
     }
@@ -1180,9 +1325,9 @@ void test_trainer() {
     }
     init_network_weights(&network);
 
-    // initializing the biases seperately is required because he init zeros them
-    // out which causes the numeric approach to give different results with a
-    // (0,0) input.
+    // initializing the biases seperately is required because he init zeros
+    // them out which causes the numeric approach to give different results
+    // with a (0,0) input.
     for (unsigned layer_idx = 0; layer_idx < network.layers_length;
          layer_idx++) {
       for (unsigned bias_idx = 0;
@@ -1199,8 +1344,9 @@ void test_trainer() {
     NNtype xor_inputs[4][2] = {{0, 0}, {0, 1}, {1, 0}, {1, 1}};
     NNtype xor_expected[4][1] = {{0}, {1}, {1}, {0}};
 
-    NNtype prev_batch_loss = calculate_batch_network_loss(
-        trainer.network, 4, &xor_inputs[0][0], &xor_expected[0][0]);
+    NNtype prev_batch_loss =
+        calculate_batch_network_loss(trainer.network, trainer.loss_type, 4,
+                                     &xor_inputs[0][0], &xor_expected[0][0]);
 
     for (unsigned i = 0; i < 10; i++) {
       calculate_batch_slope_numeric(&numeric_trainer, 4, &xor_inputs[0][0],
@@ -1215,8 +1361,9 @@ void test_trainer() {
       }
       apply_slopes(&trainer, 0.1f);
 
-      NNtype batch_loss = calculate_batch_network_loss(
-          trainer.network, 4, &xor_inputs[0][0], &xor_expected[0][0]);
+      NNtype batch_loss =
+          calculate_batch_network_loss(trainer.network, trainer.loss_type, 4,
+                                       &xor_inputs[0][0], &xor_expected[0][0]);
 
       CHECK_BOOL(batch_loss < prev_batch_loss, true);
       prev_batch_loss = batch_loss;
