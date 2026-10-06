@@ -1480,11 +1480,44 @@ void bench_and_print() {
   free_trainer(&trainer);
 }
 
+void test_loss() {
+  TEST_BLOCK("softmax") {
+    NNtype inputs[3];
+
+    memcpy(inputs, (NNtype[ARR_LENGTH(inputs)]){1, 2, 3},
+           sizeof(*inputs) * ARR_LENGTH(inputs));
+
+    softmax(ARR_LENGTH(inputs), inputs);
+    CHECK_FLOAT(inputs[0], 0.0900306f);
+    CHECK_FLOAT(inputs[1], 0.244728f);
+    CHECK_FLOAT(inputs[2], 0.665241f);
+
+    memcpy(inputs, (NNtype[ARR_LENGTH(inputs)]){1001, 1002, 1003},
+           sizeof(*inputs) * ARR_LENGTH(inputs));
+
+    softmax(ARR_LENGTH(inputs), inputs);
+    CHECK_FLOAT(inputs[0], 0.0900306f);
+    CHECK_FLOAT(inputs[1], 0.244728f);
+    CHECK_FLOAT(inputs[2], 0.665241f);
+
+    memcpy(inputs, (NNtype[ARR_LENGTH(inputs)]){1e4, 0, -1e4},
+           sizeof(*inputs) * ARR_LENGTH(inputs));
+
+    softmax(ARR_LENGTH(inputs), inputs);
+    CHECK_FLOAT(inputs[0], 1.0f);
+    CHECK_FLOAT(inputs[1], 0.0f);
+    CHECK_FLOAT(inputs[2], 0.0f);
+  }
+  // TODO
+  // TEST_BLOCK("cross entropy") {}
+}
+
 int main(void) {
 #ifndef NDEBUG
   test_neuron();
   test_layer();
   test_network();
+  test_loss();
   test_trainer();
   if (!test_summary())
     return 1;
