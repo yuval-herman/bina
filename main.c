@@ -650,7 +650,7 @@ void apply_slopes(NNTrainer *trainer, NNtype learning_rate) {
 unsigned tests_passing = 0;
 unsigned test_count = 0;
 
-#define TEST_REGISTER(got, expected, pass, format)                             \
+#define CHECK_REGISTER(got, expected, pass, format)                             \
   do {                                                                         \
     test_count++;                                                              \
     if (pass)                                                                  \
@@ -662,13 +662,13 @@ unsigned test_count = 0;
   } while (0)
 
 #define BOOL_STRING(value) ((value) ? "true" : "false")
-#define TEST_BOOL(got, expected)                                               \
-  TEST_REGISTER(BOOL_STRING(got), BOOL_STRING(expected), (got) == (expected),  \
+#define CHECK_BOOL(got, expected)                                               \
+  CHECK_REGISTER(BOOL_STRING(got), BOOL_STRING(expected), (got) == (expected),  \
                 "%s")
 
-#define TEST_FLOAT(got, expected) TEST_FLOAT_TOL(got, expected, 1e-6f, 1e-6f)
-#define TEST_FLOAT_TOL(got, expected, a_tolerance, r_tolerance)                \
-  TEST_REGISTER(                                                               \
+#define CHECK_FLOAT(got, expected) CHECK_FLOAT_TOL(got, expected, 1e-6f, 1e-6f)
+#define CHECK_FLOAT_TOL(got, expected, a_tolerance, r_tolerance)                \
+  CHECK_REGISTER(                                                               \
       (double)got, (double)expected,                                           \
       (isnan(got) && isnan(expected)) ||                                       \
           float_equals_tolerance(got, expected, a_tolerance, r_tolerance),     \
@@ -681,37 +681,37 @@ void test_neuron() {
 
   NNtype ret =
       feed_neuron(ARR_LENGTH(inputs), inputs, weights, bias, relu_activation);
-  TEST_FLOAT(ret, 3.0f);
+  CHECK_FLOAT(ret, 3.0f);
   inputs[0] = 2;
 
   ret = feed_neuron(ARR_LENGTH(inputs), inputs, weights, bias, relu_activation);
-  TEST_FLOAT(ret, 4.0f);
+  CHECK_FLOAT(ret, 4.0f);
   inputs[1] = 2;
 
   ret = feed_neuron(ARR_LENGTH(inputs), inputs, weights, bias, relu_activation);
-  TEST_FLOAT(ret, 5.0f);
+  CHECK_FLOAT(ret, 5.0f);
   weights[0] = 2;
 
   ret = feed_neuron(ARR_LENGTH(inputs), inputs, weights, bias, relu_activation);
-  TEST_FLOAT(ret, 7.0f);
+  CHECK_FLOAT(ret, 7.0f);
   weights[1] = 2;
 
   ret = feed_neuron(ARR_LENGTH(inputs), inputs, weights, bias, relu_activation);
-  TEST_FLOAT(ret, 9.0f);
+  CHECK_FLOAT(ret, 9.0f);
   weights[1] = -2;
 
   ret = feed_neuron(ARR_LENGTH(inputs), inputs, weights, bias, relu_activation);
-  TEST_FLOAT(ret, 1.0f);
+  CHECK_FLOAT(ret, 1.0f);
   weights[0] = -2;
 
   ret = feed_neuron(ARR_LENGTH(inputs), inputs, weights, bias, relu_activation);
-  TEST_FLOAT(ret, 0.0f);
+  CHECK_FLOAT(ret, 0.0f);
 
   bias = NAN;
   ret = feed_neuron(ARR_LENGTH(inputs), inputs, weights, bias, relu_activation);
   // should be 0 but just because of activation
   // function. Otherwise we had 2*-2+2*-2+1 = -7
-  TEST_FLOAT(ret, NAN);
+  CHECK_FLOAT(ret, NAN);
 }
 
 void test_layer() {
@@ -732,27 +732,27 @@ void test_layer() {
     assert(ARR_LENGTH(inputs) == layer.input_length);
 
     feed_layer(&layer, inputs);
-    TEST_FLOAT(layer.outputs[0], 3.0f);
-    TEST_FLOAT(layer.outputs[1], 3.0f);
-    TEST_FLOAT(layer.outputs[2], 3.0f);
+    CHECK_FLOAT(layer.outputs[0], 3.0f);
+    CHECK_FLOAT(layer.outputs[1], 3.0f);
+    CHECK_FLOAT(layer.outputs[2], 3.0f);
 
     for (unsigned i = 0; i < layer.output_length * layer.input_length; i++) {
       layer.weights[i] = 2;
     }
 
     feed_layer(&layer, inputs);
-    TEST_FLOAT(layer.outputs[0], 5.0f);
-    TEST_FLOAT(layer.outputs[1], 5.0f);
-    TEST_FLOAT(layer.outputs[2], 5.0f);
+    CHECK_FLOAT(layer.outputs[0], 5.0f);
+    CHECK_FLOAT(layer.outputs[1], 5.0f);
+    CHECK_FLOAT(layer.outputs[2], 5.0f);
 
     for (unsigned i = 0; i < layer.output_length; i++) {
       layer.biases[i] = 2;
     }
 
     feed_layer(&layer, inputs);
-    TEST_FLOAT(layer.outputs[0], 6.0f);
-    TEST_FLOAT(layer.outputs[1], 6.0f);
-    TEST_FLOAT(layer.outputs[2], 6.0f);
+    CHECK_FLOAT(layer.outputs[0], 6.0f);
+    CHECK_FLOAT(layer.outputs[1], 6.0f);
+    CHECK_FLOAT(layer.outputs[2], 6.0f);
 
     for (unsigned i = 0; i < layer.output_length * layer.input_length; i++) {
       layer.weights[i] = (float)i;
@@ -767,9 +767,9 @@ void test_layer() {
     }
 
     feed_layer(&layer, inputs);
-    TEST_FLOAT(layer.outputs[0], 4.0f);
-    TEST_FLOAT(layer.outputs[1], 5.0f);
-    TEST_FLOAT(layer.outputs[2], 6.0f);
+    CHECK_FLOAT(layer.outputs[0], 4.0f);
+    CHECK_FLOAT(layer.outputs[1], 5.0f);
+    CHECK_FLOAT(layer.outputs[2], 6.0f);
 
     free_network(&network);
   }
@@ -790,9 +790,9 @@ void test_layer() {
     assert(ARR_LENGTH(inputs) == layer.input_length);
 
     feed_layer(&layer, inputs);
-    TEST_FLOAT(layer.outputs[0], 4.0f);
-    TEST_FLOAT(layer.outputs[1], 4.0f);
-    TEST_FLOAT(layer.outputs[2], 4.0f);
+    CHECK_FLOAT(layer.outputs[0], 4.0f);
+    CHECK_FLOAT(layer.outputs[1], 4.0f);
+    CHECK_FLOAT(layer.outputs[2], 4.0f);
 
     for (unsigned i = 0; i < layer.output_length * layer.input_length; i++) {
       layer.weights[i] = (float)i;
@@ -807,9 +807,9 @@ void test_layer() {
     }
 
     feed_layer(&layer, inputs);
-    TEST_FLOAT(layer.outputs[0], 8.0f);
-    TEST_FLOAT(layer.outputs[1], 16.0f);
-    TEST_FLOAT(layer.outputs[2], 24.0f);
+    CHECK_FLOAT(layer.outputs[0], 8.0f);
+    CHECK_FLOAT(layer.outputs[1], 16.0f);
+    CHECK_FLOAT(layer.outputs[2], 24.0f);
 
     free_network(&network);
   }
@@ -830,8 +830,8 @@ void test_layer() {
     assert(ARR_LENGTH(inputs) == layer.input_length);
 
     feed_layer(&layer, inputs);
-    TEST_FLOAT(layer.outputs[0], 4.0f);
-    TEST_FLOAT(layer.outputs[1], 4.0f);
+    CHECK_FLOAT(layer.outputs[0], 4.0f);
+    CHECK_FLOAT(layer.outputs[1], 4.0f);
 
     for (unsigned i = 0; i < layer.output_length * layer.input_length; i++) {
       layer.weights[i] = (float)i;
@@ -846,8 +846,8 @@ void test_layer() {
     }
 
     feed_layer(&layer, inputs);
-    TEST_FLOAT(layer.outputs[0], 7.0f);
-    TEST_FLOAT(layer.outputs[1], 15.0f);
+    CHECK_FLOAT(layer.outputs[0], 7.0f);
+    CHECK_FLOAT(layer.outputs[1], 15.0f);
 
     free_network(&network);
   }
@@ -869,8 +869,8 @@ void test_layer() {
     assert(ARR_LENGTH(inputs) == layer.input_length);
 
     feed_layer(&layer, inputs);
-    TEST_FLOAT(layer.outputs[0], 0.0f);
-    TEST_FLOAT(layer.outputs[1], 0.0f);
+    CHECK_FLOAT(layer.outputs[0], 0.0f);
+    CHECK_FLOAT(layer.outputs[1], 0.0f);
 
     for (unsigned i = 0; i < layer.output_length * layer.input_length; i++) {
       layer.weights[i] = (float)i;
@@ -885,8 +885,8 @@ void test_layer() {
     }
 
     feed_layer(&layer, inputs);
-    TEST_FLOAT(layer.outputs[0], 2.5f);
-    TEST_FLOAT(layer.outputs[1], 0.0f);
+    CHECK_FLOAT(layer.outputs[0], 2.5f);
+    CHECK_FLOAT(layer.outputs[1], 0.0f);
 
     free_network(&network);
   }
@@ -925,7 +925,7 @@ void test_layer() {
               (double)activation_functions[layer.activation_type].activation(
                   (NNtype)output + layer.biases[output_idx]);
 
-          TEST_FLOAT_TOL(layer.outputs[output_idx], (NNtype)output, 1e-5f,
+          CHECK_FLOAT_TOL(layer.outputs[output_idx], (NNtype)output, 1e-5f,
                          1e-4f);
         }
 
@@ -968,7 +968,7 @@ void test_network() {
 
     feed_network(&network, inputs);
 
-    TEST_FLOAT(network.final_output[0], 13.0f);
+    CHECK_FLOAT(network.final_output[0], 13.0f);
 
     free_network(&network);
   }
@@ -983,11 +983,11 @@ void test_network() {
     for (unsigned i = 0; i < ARR_LENGTH(xor_inputs); i++) {
       feed_network(&network, xor_inputs[i]);
 
-      TEST_FLOAT(network.final_output[0], xor_expected[i]);
+      CHECK_FLOAT(network.final_output[0], xor_expected[i]);
 
       NNtype loss = calculate_loss(1, network.final_output, &xor_expected[i]);
 
-      TEST_FLOAT(loss, 0.0f);
+      CHECK_FLOAT(loss, 0.0f);
     }
 
     network.layers[0].weights[0] = 1;
@@ -998,7 +998,7 @@ void test_network() {
 
       NNtype loss = calculate_loss(1, network.final_output, &xor_expected[i]);
 
-      TEST_FLOAT(loss, expected_loss[i]);
+      CHECK_FLOAT(loss, expected_loss[i]);
     }
 
     free_network(&network);
@@ -1019,7 +1019,7 @@ void compare_numeric_backprop_slopes(NNNetwork *network) {
   batch_backpropagation_step(&trainer, 4, &inputs[0][0], &expected[0][0]);
 
   for (unsigned slope_idx = 0; slope_idx < trainer.slopes_length; slope_idx++) {
-    TEST_FLOAT_TOL(trainer.slopes[slope_idx], numeric_trainer.slopes[slope_idx],
+    CHECK_FLOAT_TOL(trainer.slopes[slope_idx], numeric_trainer.slopes[slope_idx],
                    0.003f, 1e-2f);
   }
 
@@ -1043,9 +1043,9 @@ void test_trainer() {
     calculate_batch_slope_numeric(&trainer, 4, &xor_inputs[0][0],
                                   &xor_expected[0][0]);
 
-    TEST_FLOAT_TOL(trainer.layer_slopes[1][0], 2.5f, 1e-6f, 1e-2f);
-    TEST_FLOAT_TOL(trainer.layer_slopes[1][1], 0.5f, 1e-6f, 1e-2f);
-    TEST_FLOAT_TOL(trainer.layer_slopes[1][2], 1.5f, 1e-6f, 1e-2f);
+    CHECK_FLOAT_TOL(trainer.layer_slopes[1][0], 2.5f, 1e-6f, 1e-2f);
+    CHECK_FLOAT_TOL(trainer.layer_slopes[1][1], 0.5f, 1e-6f, 1e-2f);
+    CHECK_FLOAT_TOL(trainer.layer_slopes[1][2], 1.5f, 1e-6f, 1e-2f);
 
     free_network(&network);
     free_trainer(&trainer);
@@ -1124,7 +1124,7 @@ void test_trainer() {
 
       for (unsigned slope_idx = 0; slope_idx < trainer.slopes_length;
            slope_idx++) {
-        TEST_FLOAT_TOL(numeric_trainer.slopes[slope_idx],
+        CHECK_FLOAT_TOL(numeric_trainer.slopes[slope_idx],
                        trainer.slopes[slope_idx], 1e-3f, 0.01f);
       }
       apply_slopes(&trainer, 0.1f);
@@ -1132,7 +1132,7 @@ void test_trainer() {
       NNtype batch_loss = calculate_batch_network_loss(
           trainer.network, 4, &xor_inputs[0][0], &xor_expected[0][0]);
 
-      TEST_BOOL(batch_loss < prev_batch_loss, true);
+      CHECK_BOOL(batch_loss < prev_batch_loss, true);
       prev_batch_loss = batch_loss;
     }
 
