@@ -9,6 +9,7 @@
 
 #define ANSI_RED "\033[31m"
 #define ANSI_GREEN "\033[32m"
+#define ANSI_YELLOW "\033[33m"
 #define ANSI_RESET "\033[0m"
 
 #define ARR_LENGTH(arr) (sizeof(arr) / sizeof(arr[0]))
@@ -647,28 +648,45 @@ void apply_slopes(NNTrainer *trainer, NNtype learning_rate) {
   }
 }
 
-unsigned tests_passing = 0;
-unsigned test_count = 0;
+static unsigned tests_passing = 0;
+static unsigned test_count = 0;
 
-#define CHECK_REGISTER(got, expected, pass, format)                             \
+static bool __test_block_latch;
+static unsigned __test_block_failing;
+
+#define TEST_BLOCK(name)                                                       \
+  for (__test_block_latch = (__test_block_failing = 0, true);                  \
+       __test_block_latch;                                                     \
+       __test_block_latch = false,                                             \
+      __test_block_failing == 0                                                \
+           ? 0                                                                 \
+           : printf(ANSI_YELLOW                                                \
+                    "%s test failed! (line %d)\n%u checks are failing"         \
+                    "\n" ANSI_RESET,                                           \
+                    (name), __LINE__, __test_block_failing))
+
+#define CHECK_REGISTER(got, expected, pass, format)                            \
   do {                                                                         \
     test_count++;                                                              \
     if (pass)                                                                  \
       tests_passing++;                                                         \
-    else                                                                       \
+    else {                                                                     \
+      if (__test_block_latch)                                                  \
+        __test_block_failing++;                                                \
       printf(ANSI_RED "Got incorrect value! (line %d) expected " format        \
                       " but got " format "\n" ANSI_RESET,                      \
              __LINE__, (expected), (got));                                     \
+    }                                                                          \
   } while (0)
 
 #define BOOL_STRING(value) ((value) ? "true" : "false")
-#define CHECK_BOOL(got, expected)                                               \
-  CHECK_REGISTER(BOOL_STRING(got), BOOL_STRING(expected), (got) == (expected),  \
-                "%s")
+#define CHECK_BOOL(got, expected)                                              \
+  CHECK_REGISTER(BOOL_STRING(got), BOOL_STRING(expected), (got) == (expected), \
+                 "%s")
 
 #define CHECK_FLOAT(got, expected) CHECK_FLOAT_TOL(got, expected, 1e-6f, 1e-6f)
-#define CHECK_FLOAT_TOL(got, expected, a_tolerance, r_tolerance)                \
-  CHECK_REGISTER(                                                               \
+#define CHECK_FLOAT_TOL(got, expected, a_tolerance, r_tolerance)               \
+  CHECK_REGISTER(                                                              \
       (double)got, (double)expected,                                           \
       (isnan(got) && isnan(expected)) ||                                       \
           float_equals_tolerance(got, expected, a_tolerance, r_tolerance),     \
@@ -678,44 +696,56 @@ void test_neuron() {
   NNtype inputs[] = {1, 1};
   NNtype weights[] = {1, 1};
   NNtype bias = 1;
+  NNtype ret;
 
-  NNtype ret =
-      feed_neuron(ARR_LENGTH(inputs), inputs, weights, bias, relu_activation);
-  CHECK_FLOAT(ret, 3.0f);
-  inputs[0] = 2;
+  TEST_BLOCK("single neuron") {
+    ret =
+        feed_neuron(ARR_LENGTH(inputs), inputs, weights, bias, relu_activation);
+    CHECK_FLOAT(ret, 3.0f);
+    inputs[0] = 2;
 
-  ret = feed_neuron(ARR_LENGTH(inputs), inputs, weights, bias, relu_activation);
-  CHECK_FLOAT(ret, 4.0f);
-  inputs[1] = 2;
+    ret =
+        feed_neuron(ARR_LENGTH(inputs), inputs, weights, bias, relu_activation);
+    CHECK_FLOAT(ret, 4.0f);
+    inputs[1] = 2;
 
-  ret = feed_neuron(ARR_LENGTH(inputs), inputs, weights, bias, relu_activation);
-  CHECK_FLOAT(ret, 5.0f);
-  weights[0] = 2;
+    ret =
+        feed_neuron(ARR_LENGTH(inputs), inputs, weights, bias, relu_activation);
+    CHECK_FLOAT(ret, 5.0f);
+    weights[0] = 2;
 
-  ret = feed_neuron(ARR_LENGTH(inputs), inputs, weights, bias, relu_activation);
-  CHECK_FLOAT(ret, 7.0f);
-  weights[1] = 2;
+    ret =
+        feed_neuron(ARR_LENGTH(inputs), inputs, weights, bias, relu_activation);
+    CHECK_FLOAT(ret, 7.0f);
+    weights[1] = 2;
 
-  ret = feed_neuron(ARR_LENGTH(inputs), inputs, weights, bias, relu_activation);
-  CHECK_FLOAT(ret, 9.0f);
-  weights[1] = -2;
+    ret =
+        feed_neuron(ARR_LENGTH(inputs), inputs, weights, bias, relu_activation);
+    CHECK_FLOAT(ret, 9.0f);
+    weights[1] = -2;
 
-  ret = feed_neuron(ARR_LENGTH(inputs), inputs, weights, bias, relu_activation);
-  CHECK_FLOAT(ret, 1.0f);
-  weights[0] = -2;
+    ret =
+        feed_neuron(ARR_LENGTH(inputs), inputs, weights, bias, relu_activation);
+    CHECK_FLOAT(ret, 1.0f);
+    weights[0] = -2;
 
-  ret = feed_neuron(ARR_LENGTH(inputs), inputs, weights, bias, relu_activation);
-  CHECK_FLOAT(ret, 0.0f);
+    ret =
+        feed_neuron(ARR_LENGTH(inputs), inputs, weights, bias, relu_activation);
+    CHECK_FLOAT(ret, 0.0f);
+  }
 
-  bias = NAN;
-  ret = feed_neuron(ARR_LENGTH(inputs), inputs, weights, bias, relu_activation);
-  // should be 0 but just because of activation
-  // function. Otherwise we had 2*-2+2*-2+1 = -7
-  CHECK_FLOAT(ret, NAN);
+  TEST_BLOCK("neuron NaN") {
+    bias = NAN;
+    ret =
+        feed_neuron(ARR_LENGTH(inputs), inputs, weights, bias, relu_activation);
+    // should be 0 but just because of activation
+    // function. Otherwise we had 2*-2+2*-2+1 = -7
+    CHECK_FLOAT(ret, NAN);
+  }
 }
 
 void test_layer() {
-  {
+  TEST_BLOCK("2x3 layer with 1 weights") {
     NNNetwork network = {0};
     init_network(&network, 2, (unsigned[]){2, 3});
     NNLayer layer = network.layers[0];
@@ -773,7 +803,7 @@ void test_layer() {
 
     free_network(&network);
   }
-  {
+  TEST_BLOCK("3x3 layer with 1 weights") {
     NNNetwork network = {0};
     init_network(&network, 2, (unsigned[]){3, 3});
     NNLayer layer = network.layers[0];
@@ -813,7 +843,7 @@ void test_layer() {
 
     free_network(&network);
   }
-  {
+  TEST_BLOCK("3x2 layer with 1 weights") {
     NNNetwork network = {0};
     init_network(&network, 2, (unsigned[]){3, 2});
     NNLayer layer = network.layers[0];
@@ -851,7 +881,7 @@ void test_layer() {
 
     free_network(&network);
   }
-  {
+  TEST_BLOCK("3x2 layer with 1 weights") {
     NNNetwork network = {0};
     init_network(&network, 2, (unsigned[]){3, 2});
     NNLayer layer = network.layers[0];
@@ -890,7 +920,7 @@ void test_layer() {
 
     free_network(&network);
   }
-  {
+  TEST_BLOCK("randomized activation and initialization pairings for layer") {
     for (unsigned input_size = 1; input_size < 50; input_size++) {
       for (unsigned output_size = 1; output_size < 50; output_size++) {
         NNNetwork network = {0};
@@ -926,7 +956,7 @@ void test_layer() {
                   (NNtype)output + layer.biases[output_idx]);
 
           CHECK_FLOAT_TOL(layer.outputs[output_idx], (NNtype)output, 1e-5f,
-                         1e-4f);
+                          1e-4f);
         }
 
         free_network(&network);
@@ -952,7 +982,7 @@ bool init_xor_network(NNNetwork *network) {
 }
 
 void test_network() {
-  {
+  TEST_BLOCK("simple network") {
     NNNetwork network = {0};
     init_network(&network, 3, (unsigned[]){2, 3, 1});
 
@@ -972,7 +1002,7 @@ void test_network() {
 
     free_network(&network);
   }
-  {
+  TEST_BLOCK("xor network") {
     NNNetwork network = {0};
 
     init_xor_network(&network);
@@ -1019,8 +1049,8 @@ void compare_numeric_backprop_slopes(NNNetwork *network) {
   batch_backpropagation_step(&trainer, 4, &inputs[0][0], &expected[0][0]);
 
   for (unsigned slope_idx = 0; slope_idx < trainer.slopes_length; slope_idx++) {
-    CHECK_FLOAT_TOL(trainer.slopes[slope_idx], numeric_trainer.slopes[slope_idx],
-                   0.003f, 1e-2f);
+    CHECK_FLOAT_TOL(trainer.slopes[slope_idx],
+                    numeric_trainer.slopes[slope_idx], 0.003f, 1e-2f);
   }
 
   free_trainer(&trainer);
@@ -1028,7 +1058,7 @@ void compare_numeric_backprop_slopes(NNNetwork *network) {
 }
 
 void test_trainer() {
-  {
+  TEST_BLOCK("xor trainer") {
     NNNetwork network = {0};
     init_xor_network(&network);
     NNTrainer trainer = {0};
@@ -1050,7 +1080,7 @@ void test_trainer() {
     free_network(&network);
     free_trainer(&trainer);
   }
-  {
+  TEST_BLOCK("random activation and init functions in trainer") {
     NNNetwork network = {0};
     init_network(&network, 4, (unsigned[]){2, 2, 2, 2});
 
@@ -1085,7 +1115,7 @@ void test_trainer() {
 
     free_network(&network);
   }
-  {
+  TEST_BLOCK("numeric oracle trainer") {
     NNNetwork network = {0};
     init_network(&network, 3, (unsigned[]){2, 2, 1});
     for (unsigned layer_idx = 0; layer_idx < network.layers_length - 1;
@@ -1125,7 +1155,7 @@ void test_trainer() {
       for (unsigned slope_idx = 0; slope_idx < trainer.slopes_length;
            slope_idx++) {
         CHECK_FLOAT_TOL(numeric_trainer.slopes[slope_idx],
-                       trainer.slopes[slope_idx], 1e-3f, 0.01f);
+                        trainer.slopes[slope_idx], 1e-3f, 0.01f);
       }
       apply_slopes(&trainer, 0.1f);
 
