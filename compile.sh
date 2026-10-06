@@ -17,13 +17,13 @@ build_debug() {
   gcc "${common_flags[@]}" \
     -g -O0 \
     -fsanitize=address,undefined \
-    -o main main.c -lm
+    -o nn nn.c -lm
 }
 
 build_production() {
   gcc "${common_flags[@]}" \
     -O3 -DNDEBUG \
-    -o main main.c -lm
+    -o nn nn.c -lm
 }
 
 run_tests() {
@@ -31,7 +31,7 @@ run_tests() {
   build_debug
 
   echo "Running debug executable..."
-  if ./main; then
+  if ./nn; then
     echo "Debug executable exited successfully."
   else
     status=$?
