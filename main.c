@@ -386,7 +386,6 @@ NNtype feed_neuron(unsigned input_length, const NNtype *inputs,
   }
 #undef DRAIN_COUNT
 
-  // TODO save value vefore activation as well for derivative calculation
   if (activation)
     output = activation(output + bias);
   else
@@ -558,8 +557,6 @@ void batch_backpropagation_step(NNTrainer *trainer, unsigned batch_length,
            neuron_idx++) {
         layer_deltas[neuron_idx] *=
             activation_functions[layer->activation_type].derivative(
-                // TODO use the output before activation to get the correct
-                // result for functions other then ReLU
                 layer->outputs[neuron_idx]);
       }
     }
