@@ -1512,6 +1512,7 @@ void test_loss() {
   // TEST_BLOCK("cross entropy") {}
 }
 
+#ifdef NN_MAIN
 int main(void) {
 #ifndef NDEBUG
   test_neuron();
@@ -1525,3 +1526,4 @@ int main(void) {
   bench_and_print();
 #endif
 }
+#endif

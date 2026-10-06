@@ -15,6 +15,7 @@ common_flags=(
 
 build_debug() {
   gcc "${common_flags[@]}" \
+    -DNN_MAIN \
     -g -O0 \
     -fsanitize=address,undefined \
     -o nn nn.c -lm
@@ -22,8 +23,16 @@ build_debug() {
 
 build_production() {
   gcc "${common_flags[@]}" \
+    -DNN_MAIN \
     -O3 -DNDEBUG \
     -o nn nn.c -lm
+}
+
+build_emnist() {
+  gcc "${common_flags[@]}" \
+    -O3 -DNDEBUG \
+    -fsanitize=address,undefined \
+    -o emnist emnist.c -lm
 }
 
 run_tests() {
@@ -54,12 +63,16 @@ case "$mode" in
     build_production
     ;;
 
+  emnist)
+    build_emnist
+    ;;
+
   test)
     run_tests
     ;;
 
   *)
-    echo "Usage: $0 [debug|prod|test]"
+    echo "Usage: $0 [debug|prod|emnist|test]"
     exit 1
     ;;
 esac
