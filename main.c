@@ -118,6 +118,21 @@ static inline NNtype tanh_derivative(NNtype value) {
   return 1.0f - (value * value);
 }
 
+static char *activation_function_name(NNActivationType activation_type) {
+  switch (activation_type) {
+  default:
+    assert(!"impossible activation type");
+
+  case NN_NO_ACTIVATION:
+    return "no activation";
+  case NN_RELU_ACTIVATION:
+    return "relu";
+  case NN_SIGMOID_ACTIVATION:
+    return "sigmoid";
+  case NN_TANH_ACTIVATION:
+    return "tanh";
+  }
+}
 const struct {
   NNactivation activation;
   NNactivation derivative;
@@ -164,6 +179,20 @@ static inline void xavier_init(NNLayer *layer) {
   }
   for (unsigned bias_idx = 0; bias_idx < layer->output_length; bias_idx++) {
     layer->biases[bias_idx] = 0;
+  }
+}
+
+static char *init_function_name(NNInitType init_type) {
+  switch (init_type) {
+  default:
+    assert(!"impossible init type");
+
+  case NN_UNIFORM_INIT:
+    return "uniform";
+  case NN_HE_INIT:
+    return "he";
+  case NN_XAVIER_INIT:
+    return "xavier";
   }
 }
 
@@ -648,31 +677,48 @@ void apply_slopes(NNTrainer *trainer, NNtype learning_rate) {
   }
 }
 
-static unsigned tests_passing = 0;
+static unsigned test_checks_passing = 0;
+static unsigned test_check_count = 0;
+static unsigned test_passing = 0;
 static unsigned test_count = 0;
 
 static bool __test_block_latch;
 static unsigned __test_block_failing;
 
-#define TEST_BLOCK(name)                                                       \
-  for (__test_block_latch = (__test_block_failing = 0, true);                  \
+#define TEST_BLOCK(name, ...)                                                  \
+  for (__test_block_latch = (__test_block_failing = 0, test_count++, true);    \
        __test_block_latch;                                                     \
        __test_block_latch = false,                                             \
       __test_block_failing == 0                                                \
-           ? 0                                                                 \
-           : printf(ANSI_YELLOW                                                \
-                    "%s test failed! (line %d)\n%u checks are failing"         \
+           ? (void)test_passing++                                                    \
+           : printf(ANSI_YELLOW name                                           \
+                    " test failed! (line %d)\n%u checks are failing"           \
                     "\n" ANSI_RESET,                                           \
-                    (name), __LINE__, __test_block_failing))
+                    ##__VA_ARGS__, __LINE__, __test_block_failing))
+
+static bool __test_step_latch;
+static unsigned __test_step_failing;
+
+#define TEST_STEP(step_name, ...)                                              \
+  for (__test_step_latch = (__test_step_failing = 0, true); __test_step_latch; \
+       __test_step_latch = false,                                              \
+      __test_step_failing == 0                                                 \
+           ? 0                                                                 \
+           : printf(ANSI_YELLOW step_name                                      \
+                    " test step failed! (line %d)\n%u checks are failing"      \
+                    "\n" ANSI_RESET,                                           \
+                    ##__VA_ARGS__, __LINE__, __test_step_failing))
 
 #define CHECK_REGISTER(got, expected, pass, format)                            \
   do {                                                                         \
-    test_count++;                                                              \
+    test_check_count++;                                                        \
     if (pass)                                                                  \
-      tests_passing++;                                                         \
+      test_checks_passing++;                                                   \
     else {                                                                     \
       if (__test_block_latch)                                                  \
         __test_block_failing++;                                                \
+      if (__test_step_latch)                                                   \
+        __test_step_failing++;                                                 \
       printf(ANSI_RED "Got incorrect value! (line %d) expected " format        \
                       " but got " format "\n" ANSI_RESET,                      \
              __LINE__, (expected), (got));                                     \
@@ -920,47 +966,50 @@ void test_layer() {
 
     free_network(&network);
   }
-  TEST_BLOCK("randomized activation and initialization pairings for layer") {
+  TEST_BLOCK("random layer sizes") {
     for (unsigned input_size = 1; input_size < 50; input_size++) {
       for (unsigned output_size = 1; output_size < 50; output_size++) {
-        NNNetwork network = {0};
-        init_network(&network, 2, (unsigned[]){input_size, output_size});
-        NNLayer layer = network.layers[0];
-        layer.activation_type = NN_RELU_ACTIVATION;
-        layer.init_type = NN_HE_INIT;
+        TEST_STEP("input = %u output = %u", input_size, output_size) {
+          NNNetwork network = {0};
+          init_network(&network, 2, (unsigned[]){input_size, output_size});
+          NNLayer layer = network.layers[0];
+          layer.activation_type = NN_RELU_ACTIVATION;
+          layer.init_type = NN_HE_INIT;
 
-        srand(0);
+          srand(0);
 
-        init_network_weights(&network);
+          init_network_weights(&network);
 
-        NNtype *inputs = malloc(sizeof inputs[0] * input_size);
+          NNtype *inputs = malloc(sizeof inputs[0] * input_size);
 
-        for (unsigned i = 0; i < input_size; i++) {
-          inputs[i] = random_NNtype(-1, 1);
-        }
-
-        feed_layer(&layer, inputs);
-
-        // Simple vector multiplication for test
-
-        for (unsigned output_idx = 0; output_idx < output_size; output_idx++) {
-          // Using double for higer prescision while testing
-          double output = 0;
-          for (unsigned input_idx = 0; input_idx < input_size; input_idx++) {
-            output +=
-                (double)inputs[input_idx] *
-                (double)layer.weights[input_idx + input_size * output_idx];
+          for (unsigned i = 0; i < input_size; i++) {
+            inputs[i] = random_NNtype(-1, 1);
           }
-          output =
-              (double)activation_functions[layer.activation_type].activation(
-                  (NNtype)output + layer.biases[output_idx]);
 
-          CHECK_FLOAT_TOL(layer.outputs[output_idx], (NNtype)output, 1e-5f,
-                          1e-4f);
+          feed_layer(&layer, inputs);
+
+          // Simple vector multiplication for test
+
+          for (unsigned output_idx = 0; output_idx < output_size;
+               output_idx++) {
+            // Using double for higer prescision while testing
+            double output = 0;
+            for (unsigned input_idx = 0; input_idx < input_size; input_idx++) {
+              output +=
+                  (double)inputs[input_idx] *
+                  (double)layer.weights[input_idx + input_size * output_idx];
+            }
+            output =
+                (double)activation_functions[layer.activation_type].activation(
+                    (NNtype)output + layer.biases[output_idx]);
+
+            CHECK_FLOAT_TOL(layer.outputs[output_idx], (NNtype)output, 1e-5f,
+                            1e-4f);
+          }
+
+          free_network(&network);
+          free(inputs);
         }
-
-        free_network(&network);
-        free(inputs);
       }
     }
   }
@@ -1086,30 +1135,35 @@ void test_trainer() {
 
     for (NNInitType init_type = NN_NO_INIT + 1; init_type < NN_INIT_COUNT__;
          init_type++) {
-      for (NNActivationType activation_type = NN_NO_ACTIVATION + 1;
+      for (NNActivationType activation_type = NN_NO_ACTIVATION;
            activation_type < NN_ACTIVATION_COUNT__; activation_type++) {
+        TEST_STEP("activation = %s init = %s",
+                  activation_function_name(activation_type),
+                  init_function_name(init_type)) {
 
-        for (unsigned layer_idx = 0; layer_idx < network.layers_length;
-             layer_idx++) {
-          network.layers[layer_idx].init_type = init_type;
-          network.layers[layer_idx].activation_type = activation_type;
-        }
-
-        init_network_weights(&network);
-
-        // initializing the biases seperately is required because he init zeros
-        // them out which causes the numeric approach to give different results
-        // with a (0,0) input.
-        for (unsigned layer_idx = 0; layer_idx < network.layers_length;
-             layer_idx++) {
-          for (unsigned bias_idx = 0;
-               bias_idx < network.layers[layer_idx].output_length; bias_idx++) {
-            network.layers[layer_idx].biases[bias_idx] =
-                random_NNtype(0.01f, 0.1f);
+          for (unsigned layer_idx = 0; layer_idx < network.layers_length;
+               layer_idx++) {
+            network.layers[layer_idx].init_type = init_type;
+            network.layers[layer_idx].activation_type = activation_type;
           }
-        }
 
-        compare_numeric_backprop_slopes(&network);
+          init_network_weights(&network);
+
+          // initializing the biases seperately is required because he init
+          // zeros them out which causes the numeric approach to give different
+          // results with a (0,0) input.
+          for (unsigned layer_idx = 0; layer_idx < network.layers_length;
+               layer_idx++) {
+            for (unsigned bias_idx = 0;
+                 bias_idx < network.layers[layer_idx].output_length;
+                 bias_idx++) {
+              network.layers[layer_idx].biases[bias_idx] =
+                  random_NNtype(0.01f, 0.1f);
+            }
+          }
+
+          compare_numeric_backprop_slopes(&network);
+        }
       }
     }
 
@@ -1173,10 +1227,15 @@ void test_trainer() {
 }
 
 bool test_summary() {
-  if (test_count > tests_passing) {
-    const unsigned failing = test_count - tests_passing;
-    printf("ran %u tests, with %u (%.3g%%) failing.\n", test_count, failing,
-           ((double)failing / test_count) * 100);
+  if (test_count > test_checks_passing ||
+      test_check_count > test_checks_passing) {
+    const unsigned failing_tests = test_count - test_passing;
+    printf("ran %u tests, with %u (%.3g%%) failing.\n", test_count,
+           failing_tests, ((double)failing_tests / test_count) * 100);
+    const unsigned failing_test_checks = test_check_count - test_checks_passing;
+    printf("ran %u checks, with %u (%.3g%%) failing.\n", test_check_count,
+           failing_test_checks,
+           ((double)failing_test_checks / test_check_count) * 100);
     return false;
   } else {
     printf("ran %u tests, with no fails!\n", test_count);
