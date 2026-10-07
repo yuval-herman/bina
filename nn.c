@@ -77,22 +77,56 @@ typedef struct {
   NNLossType loss_type;
 } NNTrainer;
 
+// ================ PCG ================
+// *Really* minimal PCG32 code / (c) 2014 M.E. O'Neill / pcg-random.org
+// Licensed under Apache License 2.0 (NO WARRANTY, etc. see website)
+
+typedef struct {
+  uint64_t state;
+  uint64_t inc;
+} pcg32_random_t;
+
+static inline uint32_t pcg32_random_r(pcg32_random_t *rng) {
+  uint64_t oldstate = rng->state;
+  // Advance internal state
+  rng->state = oldstate * 6364136223846793005ULL + (rng->inc | 1);
+  // Calculate output function (XSH RR), uses old state for max ILP
+  uint32_t xorshifted = (uint32_t)(((oldstate >> 18u) ^ oldstate) >> 27u);
+  uint32_t rot = (uint32_t)(oldstate >> 59u);
+  return (xorshifted >> rot) | (xorshifted << ((-rot) & 31));
+}
+
+static inline void pcg32_srandom_r(pcg32_random_t *rng, uint64_t initstate,
+                                   uint64_t initseq) {
+  rng->state = 0U;
+  rng->inc = (initseq << 1u) | 1u;
+  pcg32_random_r(rng);
+  rng->state += initstate;
+  pcg32_random_r(rng);
+}
+
+static inline float pcg32_uniform_float(pcg32_random_t *rng) {
+  return (float)(pcg32_random_r(rng) >> 8) * 0x1.0p-24f;
+}
+
+// Fast uniform float in [min, max)
+static inline float pcg32_float_range(pcg32_random_t *rng, float min,
+                                      float max) {
+  float u = pcg32_uniform_float(rng);
+  return min + u * (max - min);
+} // ================ PCG ================
+
 static inline NNtype *get_weight(NNLayer *layer, unsigned output_idx,
                                  unsigned weight_idx) {
   return layer->weights + output_idx * layer->input_length + weight_idx;
 }
 
-typedef void (*NNInitLayer)(NNLayer *layer);
+typedef void (*NNInitLayer)(NNLayer *layer, pcg32_random_t *rng);
 typedef NNtype (*NNComputeLoss)(unsigned input_length, const NNtype *values,
                                 const NNtype *expected);
 // Loss derivative functions overwrite the `values` array
 typedef void (*NNComputeLossDerivative)(unsigned input_length, NNtype *values,
                                         const NNtype *expected);
-
-static inline NNtype random_NNtype(NNtype min, NNtype max) {
-  return min +
-         ((NNtype)rand() / ((NNtype)RAND_MAX + (NNtype)1.0)) * (max - min);
-}
 
 static inline uint64_t get_time(void) {
   struct timespec ts;
@@ -162,35 +196,38 @@ const struct {
                             .derivative = tanh_derivative},
 };
 
-static inline void noop_init(NNLayer *layer) { (void)layer; }
+static inline void noop_init(NNLayer *layer, pcg32_random_t *rng) {
+  (void)layer;
+  (void)rng;
+}
 
-static inline void uniform_init(NNLayer *layer) {
+static inline void uniform_init(NNLayer *layer, pcg32_random_t *rng) {
   for (unsigned weight_idx = 0;
        weight_idx < layer->output_length * layer->input_length; weight_idx++) {
-    layer->weights[weight_idx] = random_NNtype(-1, 1);
+    layer->weights[weight_idx] = pcg32_float_range(rng, -1, 1);
   }
   for (unsigned bias_idx = 0; bias_idx < layer->output_length; bias_idx++) {
-    layer->biases[bias_idx] = random_NNtype(-1, 1);
+    layer->biases[bias_idx] = pcg32_float_range(rng, -1, 1);
   }
 }
 
-static inline void he_init(NNLayer *layer) {
+static inline void he_init(NNLayer *layer, pcg32_random_t *rng) {
   const NNtype boundary = sqrtf(6.0f / (NNtype)layer->input_length);
   for (unsigned weight_idx = 0;
        weight_idx < layer->output_length * layer->input_length; weight_idx++) {
-    layer->weights[weight_idx] = random_NNtype(-boundary, boundary);
+    layer->weights[weight_idx] = pcg32_float_range(rng, -boundary, boundary);
   }
   for (unsigned bias_idx = 0; bias_idx < layer->output_length; bias_idx++) {
     layer->biases[bias_idx] = 0;
   }
 }
 
-static inline void xavier_init(NNLayer *layer) {
+static inline void xavier_init(NNLayer *layer, pcg32_random_t *rng) {
   const NNtype boundary = sqrtf(
       6.0f / ((NNtype)layer->input_length + (NNtype)layer->output_length));
   for (unsigned weight_idx = 0;
        weight_idx < layer->output_length * layer->input_length; weight_idx++) {
-    layer->weights[weight_idx] = random_NNtype(-boundary, boundary);
+    layer->weights[weight_idx] = pcg32_float_range(rng, -boundary, boundary);
   }
   for (unsigned bias_idx = 0; bias_idx < layer->output_length; bias_idx++) {
     layer->biases[bias_idx] = 0;
@@ -401,16 +438,14 @@ bool init_network(NNNetwork *network, unsigned layers_length,
   return true;
 }
 
-// Caller is responsible to call srand(0)
-void init_layer_weights(NNLayer *layer) {
-  init_functions[layer->init_type](layer);
+void init_layer_weights(NNLayer *layer, pcg32_random_t *rng) {
+  init_functions[layer->init_type](layer, rng);
 }
 
-// Caller is responsible to call srand(0)
-void init_network_weights(NNNetwork *network) {
+void init_network_weights(NNNetwork *network, pcg32_random_t *rng) {
   for (unsigned layer_idx = 0; layer_idx < network->layers_length;
        layer_idx++) {
-    init_layer_weights(&network->layers[layer_idx]);
+    init_layer_weights(&network->layers[layer_idx], rng);
   }
 }
 
@@ -1159,14 +1194,15 @@ void test_layer() {
           layer.activation_type = NN_RELU_ACTIVATION;
           layer.init_type = NN_HE_INIT;
 
-          srand(0);
+          pcg32_random_t rng;
+          pcg32_srandom_r(&rng, 0, 0);
 
-          init_network_weights(&network);
+          init_network_weights(&network, &rng);
 
           NNtype *inputs = malloc(sizeof inputs[0] * input_size);
 
           for (unsigned i = 0; i < input_size; i++) {
-            inputs[i] = random_NNtype(-1, 1);
+            inputs[i] = pcg32_float_range(&rng, -1, 1);
           }
 
           feed_layer(&layer, inputs);
@@ -1336,7 +1372,10 @@ void test_trainer() {
               network.layers[layer_idx].activation_type = activation_type;
             }
 
-            init_network_weights(&network);
+            pcg32_random_t rng;
+            pcg32_srandom_r(&rng, 0, 0);
+
+            init_network_weights(&network, &rng);
 
             // initializing the biases seperately is required because he init
             // zeros them out which causes the numeric approach to give
@@ -1347,7 +1386,7 @@ void test_trainer() {
                    bias_idx < network.layers[layer_idx].output_length;
                    bias_idx++) {
                 network.layers[layer_idx].biases[bias_idx] =
-                    random_NNtype(0.01f, 0.1f);
+                    pcg32_float_range(&rng, 0.01f, 0.1f);
               }
             }
 
@@ -1366,7 +1405,11 @@ void test_trainer() {
          layer_idx++) {
       network.layers[layer_idx].init_type = NN_HE_INIT;
     }
-    init_network_weights(&network);
+
+    pcg32_random_t rng;
+    pcg32_srandom_r(&rng, 0, 0);
+
+    init_network_weights(&network, &rng);
 
     // initializing the biases seperately is required because he init zeros
     // them out which causes the numeric approach to give different results
@@ -1375,7 +1418,8 @@ void test_trainer() {
          layer_idx++) {
       for (unsigned bias_idx = 0;
            bias_idx < network.layers[layer_idx].output_length; bias_idx++) {
-        network.layers[layer_idx].biases[bias_idx] = random_NNtype(0.01f, 0.1f);
+        network.layers[layer_idx].biases[bias_idx] =
+            pcg32_float_range(&rng, 0.01f, 0.1f);
       }
     }
 
@@ -1445,13 +1489,16 @@ void bench_and_print() {
   NNtype inputs[batch_length][input_length];
   NNtype expected[batch_length][expected_length];
 
+  pcg32_random_t rng;
+  pcg32_srandom_r(&rng, 0, 0);
+
   for (unsigned batch_idx = 0; batch_idx < batch_length; batch_idx++) {
     for (unsigned input_idx = 0; input_idx < input_length; input_idx++) {
-      inputs[batch_idx][input_idx] = random_NNtype(-1, 1);
+      inputs[batch_idx][input_idx] = pcg32_float_range(&rng, -1, 1);
     }
     for (unsigned expected_idx = 0; expected_idx < expected_length;
          expected_idx++) {
-      expected[batch_idx][expected_idx] = random_NNtype(-1, 1);
+      expected[batch_idx][expected_idx] = pcg32_float_range(&rng, -1, 1);
     }
   }
 
@@ -1461,9 +1508,7 @@ void bench_and_print() {
   NNTrainer trainer = {0};
   init_trainer(&trainer, &network);
 
-  srand(0);
-
-  init_network_weights(&network);
+  init_network_weights(&network, &rng);
 
   uint64_t backprop_min_time = UINT64_MAX;
   uint64_t apply_slope_min_time = UINT64_MAX;
