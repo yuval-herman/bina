@@ -78,9 +78,12 @@ int main(void) {
       return 1;
     }
     dim_sizes[i] = ntohl(dim_sizes[i]);
-    data_length += dim_sizes[i];
-    if (i > 0)
+    if (i > 0) {
       network_input *= dim_sizes[i];
+      data_length *= dim_sizes[i];
+    } else {
+      data_length += dim_sizes[i];
+    }
     printf("dim size %u = %u\n", i, dim_sizes[i]);
   }
 
