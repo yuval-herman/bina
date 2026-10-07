@@ -786,7 +786,7 @@ void calculate_layers_delta(NNTrainer *trainer, const NNtype *output_delta) {
   // anything.
   if (output_delta != NULL &&
       trainer->layer_deltas[network->layers_length - 1] != output_delta) {
-    mempcpy(trainer->layer_deltas[network->layers_length - 1], output_delta,
+    memcpy(trainer->layer_deltas[network->layers_length - 1], output_delta,
             sizeof(*output_delta) * network->final_output_length);
   }
 
