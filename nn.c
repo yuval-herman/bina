@@ -666,6 +666,142 @@ void calculate_batch_slope_numeric(NNTrainer *trainer, unsigned inputs_length,
   }
 }
 
+const NNtype *calculate_output_delta(NNTrainer *trainer, const NNtype *inputs,
+                                     const NNtype *expected) {
+  assert(inputs);
+  assert(expected);
+  assert(trainer);
+  NNNetwork *network = trainer->network;
+  assert(network && "trainer must be initialised before training");
+
+  memset(trainer->deltas, 0, trainer->deltas_length * sizeof(NNtype));
+  feed_network(network, inputs);
+
+  assert(trainer->network_loss_length == network->final_output_length);
+  memcpy(trainer->network_loss, network->final_output,
+         trainer->network_loss_length * sizeof(*trainer->network_loss));
+
+  loss_functions[trainer->loss_type].derivative(
+      trainer->network_loss_length, trainer->network_loss, expected);
+
+  const NNLayer *layer = &network->layers[network->layers_length - 1];
+  NNtype *layer_deltas = trainer->layer_deltas[network->layers_length - 1];
+
+  for (unsigned neuron_idx = 0; neuron_idx < network->final_output_length;
+       neuron_idx++) {
+
+    layer_deltas[neuron_idx] = trainer->network_loss[neuron_idx];
+
+    layer_deltas[neuron_idx] *=
+        activation_functions[layer->activation_type].derivative(
+            layer->outputs[neuron_idx]);
+  }
+
+  return layer_deltas;
+}
+
+// `output_delta` can be set to NULL if this function is called after
+// `calculate_output_delta`.
+void calculate_layers_delta(NNTrainer *trainer, const NNtype *output_delta) {
+  assert(trainer);
+  NNNetwork *network = trainer->network;
+  assert(network && "trainer must be initialised before training");
+
+  // The normal training functions within the library all use the trainer's own
+  // buffers. But we accept output_delta as a paramter for extra flexibility. If
+  // the function was called from within the library, there is no need to copy
+  // anything.
+  if (output_delta != NULL &&
+      trainer->layer_deltas[network->layers_length - 1] != output_delta) {
+    mempcpy(trainer->layer_deltas[network->layers_length - 1], output_delta,
+            sizeof(*output_delta) * network->final_output_length);
+  }
+
+  for (unsigned layer_counter = 0; layer_counter < network->layers_length - 1;
+       layer_counter++) {
+    const unsigned layer_idx = network->layers_length - layer_counter - 2;
+    const NNLayer *layer = &network->layers[layer_idx];
+    NNtype *layer_deltas = trainer->layer_deltas[layer_idx];
+    NNLayer *last_visited_layer = &network->layers[layer_idx + 1];
+    NNtype *last_visited_layer_deltas = trainer->layer_deltas[layer_idx + 1];
+
+    for (unsigned last_layer_neuron_idx = 0;
+         last_layer_neuron_idx < last_visited_layer->output_length;
+         last_layer_neuron_idx++) {
+      for (unsigned neuron_idx = 0; neuron_idx < layer->output_length;
+           neuron_idx++) {
+        layer_deltas[neuron_idx] +=
+            *get_weight(last_visited_layer, last_layer_neuron_idx, neuron_idx) *
+            last_visited_layer_deltas[last_layer_neuron_idx];
+      }
+    }
+    for (unsigned neuron_idx = 0; neuron_idx < layer->output_length;
+         neuron_idx++) {
+      layer_deltas[neuron_idx] *=
+          activation_functions[layer->activation_type].derivative(
+              layer->outputs[neuron_idx]);
+    }
+  }
+}
+
+// Adds to the network slopes, requires clearing before call for each batch.
+void calculate_network_slopes(NNTrainer *trainer, const NNtype *input) {
+  assert(input);
+  assert(trainer);
+  NNNetwork *network = trainer->network;
+  assert(network && "trainer must be initialised before training");
+
+  // first layer needs special handling because we don't have the input
+  // saved within the layers
+
+  {
+    const unsigned layer_idx = 0;
+    const NNLayer layer = network->layers[layer_idx];
+    NNtype *layer_slopes = trainer->layer_slopes[layer_idx];
+    const unsigned weights_length = layer.input_length * layer.output_length;
+
+    for (unsigned bias_idx = 0;
+         bias_idx < network->layers[layer_idx].output_length; bias_idx++) {
+      trainer->layer_slopes[layer_idx][weights_length + bias_idx] +=
+          trainer->layer_deltas[layer_idx][bias_idx];
+    }
+
+    for (unsigned neuron_idx = 0; neuron_idx < layer.output_length;
+         neuron_idx++) {
+      NNtype *weight_slopes = layer_slopes + layer.input_length * neuron_idx;
+      for (unsigned input_idx = 0; input_idx < layer.input_length;
+           input_idx++) {
+        weight_slopes[input_idx] +=
+            input[input_idx] * trainer->layer_deltas[layer_idx][neuron_idx];
+      }
+    }
+  }
+
+  for (unsigned layer_idx = 1; layer_idx < network->layers_length;
+       layer_idx++) {
+    const NNLayer layer = network->layers[layer_idx];
+    const NNLayer preceding_layer = network->layers[layer_idx - 1];
+    NNtype *layer_slopes = trainer->layer_slopes[layer_idx];
+    const unsigned weights_length = layer.input_length * layer.output_length;
+
+    for (unsigned bias_idx = 0;
+         bias_idx < network->layers[layer_idx].output_length; bias_idx++) {
+      trainer->layer_slopes[layer_idx][weights_length + bias_idx] +=
+          trainer->layer_deltas[layer_idx][bias_idx];
+    }
+
+    for (unsigned neuron_idx = 0; neuron_idx < layer.output_length;
+         neuron_idx++) {
+      NNtype *weight_slopes = layer_slopes + layer.input_length * neuron_idx;
+      for (unsigned input_idx = 0; input_idx < layer.input_length;
+           input_idx++) {
+        weight_slopes[input_idx] +=
+            preceding_layer.outputs[input_idx] *
+            trainer->layer_deltas[layer_idx][neuron_idx];
+      }
+    }
+  }
+}
 // Calculates and applies a single backpropagation step for a batch of inputs.
 // `inputs` and `expected` are both 2d arrays that are expected to be in
 // contiguous memory.
@@ -687,106 +823,13 @@ void batch_backpropagation_step(NNTrainer *trainer, unsigned batch_length,
     memset(trainer->deltas, 0, trainer->deltas_length * sizeof(NNtype));
     feed_network(network, input_batch);
 
-    // delta for the output layer, the last layer
-    assert(trainer->network_loss_length == network->final_output_length);
-    memcpy(trainer->network_loss, network->final_output,
-           trainer->network_loss_length * sizeof(*trainer->network_loss));
+    calculate_output_delta(
+        trainer, input_batch,
+        &expected[network->final_output_length * input_batch_idx]);
 
-    loss_functions[trainer->loss_type].derivative(
-        trainer->network_loss_length, trainer->network_loss,
-        expected + network->final_output_length * input_batch_idx);
+    calculate_layers_delta(trainer, NULL);
 
-    for (unsigned neuron_idx = 0; neuron_idx < network->final_output_length;
-         neuron_idx++) {
-      const NNLayer *layer = &network->layers[network->layers_length - 1];
-      NNtype *layer_deltas = trainer->layer_deltas[network->layers_length - 1];
-
-      layer_deltas[neuron_idx] = trainer->network_loss[neuron_idx];
-
-      layer_deltas[neuron_idx] *=
-          activation_functions[layer->activation_type].derivative(
-              layer->outputs[neuron_idx]);
-    }
-
-    // deltas for the rest of the layers
-    for (unsigned layer_counter = 0; layer_counter < network->layers_length - 1;
-         layer_counter++) {
-      const unsigned layer_idx = network->layers_length - layer_counter - 2;
-      const NNLayer *layer = &network->layers[layer_idx];
-      NNtype *layer_deltas = trainer->layer_deltas[layer_idx];
-      NNLayer *last_visited_layer = &network->layers[layer_idx + 1];
-      NNtype *last_visited_layer_deltas = trainer->layer_deltas[layer_idx + 1];
-
-      for (unsigned last_layer_neuron_idx = 0;
-           last_layer_neuron_idx < last_visited_layer->output_length;
-           last_layer_neuron_idx++) {
-        for (unsigned neuron_idx = 0; neuron_idx < layer->output_length;
-             neuron_idx++) {
-          layer_deltas[neuron_idx] +=
-              *get_weight(last_visited_layer, last_layer_neuron_idx,
-                          neuron_idx) *
-              last_visited_layer_deltas[last_layer_neuron_idx];
-        }
-      }
-      for (unsigned neuron_idx = 0; neuron_idx < layer->output_length;
-           neuron_idx++) {
-        layer_deltas[neuron_idx] *=
-            activation_functions[layer->activation_type].derivative(
-                layer->outputs[neuron_idx]);
-      }
-    }
-
-    // first layer needs special handling because we don't have the input
-    // saved within the layers
-
-    {
-      const unsigned layer_idx = 0;
-      const NNLayer layer = network->layers[layer_idx];
-      NNtype *layer_slopes = trainer->layer_slopes[layer_idx];
-      const unsigned weights_length = layer.input_length * layer.output_length;
-
-      for (unsigned bias_idx = 0;
-           bias_idx < network->layers[layer_idx].output_length; bias_idx++) {
-        trainer->layer_slopes[layer_idx][weights_length + bias_idx] +=
-            trainer->layer_deltas[layer_idx][bias_idx];
-      }
-
-      for (unsigned neuron_idx = 0; neuron_idx < layer.output_length;
-           neuron_idx++) {
-        NNtype *weight_slopes = layer_slopes + layer.input_length * neuron_idx;
-        for (unsigned input_idx = 0; input_idx < layer.input_length;
-             input_idx++) {
-          weight_slopes[input_idx] +=
-              input_batch[input_idx] *
-              trainer->layer_deltas[layer_idx][neuron_idx];
-        }
-      }
-    }
-
-    for (unsigned layer_idx = 1; layer_idx < network->layers_length;
-         layer_idx++) {
-      const NNLayer layer = network->layers[layer_idx];
-      const NNLayer preceding_layer = network->layers[layer_idx - 1];
-      NNtype *layer_slopes = trainer->layer_slopes[layer_idx];
-      const unsigned weights_length = layer.input_length * layer.output_length;
-
-      for (unsigned bias_idx = 0;
-           bias_idx < network->layers[layer_idx].output_length; bias_idx++) {
-        trainer->layer_slopes[layer_idx][weights_length + bias_idx] +=
-            trainer->layer_deltas[layer_idx][bias_idx];
-      }
-
-      for (unsigned neuron_idx = 0; neuron_idx < layer.output_length;
-           neuron_idx++) {
-        NNtype *weight_slopes = layer_slopes + layer.input_length * neuron_idx;
-        for (unsigned input_idx = 0; input_idx < layer.input_length;
-             input_idx++) {
-          weight_slopes[input_idx] +=
-              preceding_layer.outputs[input_idx] *
-              trainer->layer_deltas[layer_idx][neuron_idx];
-        }
-      }
-    }
+    calculate_network_slopes(trainer, input_batch);
   }
 
   for (unsigned slope_idx = 0; slope_idx < trainer->slopes_length;
