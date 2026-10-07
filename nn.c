@@ -77,6 +77,7 @@ typedef struct {
   // This array containes pointers to the start of each layer's delta values.
   NNtype **layer_deltas;
   NNLossType loss_type;
+  NNtype learning_rate;
 } NNTrainer;
 
 // ================ PCG ================
@@ -574,6 +575,7 @@ bool init_trainer(NNTrainer *trainer, NNNetwork *network) {
   trainer->slopes_length = slopes_length;
   trainer->deltas_length = deltas_length;
   trainer->network_loss_length = network->final_output_length;
+  trainer->learning_rate = 0.1f;
 
   trainer->layer_slopes[0] = trainer->slopes;
   trainer->layer_deltas[0] = trainer->deltas;
@@ -880,33 +882,6 @@ void calculate_network_slopes(NNTrainer *trainer, const NNtype *input) {
     }
   }
 }
-// Calculates and applies a single backpropagation step for a batch of inputs.
-// `inputs` and `expected` are both 2d arrays that are expected to be in
-// contiguous memory.
-void batch_backpropagation_step(NNTrainer *trainer, unsigned batch_length,
-                                const NNtype *inputs, const NNtype *expected) {
-  assert(batch_length && inputs);
-  assert(expected);
-  assert(trainer);
-  NNNetwork *network = trainer->network;
-  assert(network && "trainer must be initialised before training");
-
-  memset(trainer->slopes, 0, trainer->slopes_length * sizeof(NNtype));
-
-  for (unsigned input_batch_idx = 0; input_batch_idx < batch_length;
-       input_batch_idx++) {
-    const NNtype *input_batch =
-        inputs + network->layers[0].input_length * input_batch_idx;
-
-    calculate_output_gradient(
-        trainer, input_batch,
-        &expected[network->final_output_length * input_batch_idx]);
-
-    calculate_layers_delta(trainer, NULL);
-
-    calculate_network_slopes(trainer, input_batch);
-  }
-}
 
 void apply_slopes(NNTrainer *trainer, NNtype learning_rate,
                   unsigned batch_length) {
@@ -933,6 +908,36 @@ void apply_slopes(NNTrainer *trainer, NNtype learning_rate,
           learning_rate;
     }
   }
+}
+
+// Calculates and applies a single training step for a batch of inputs.
+// `inputs` and `expected` are both 2d arrays that are expected to be in
+// contiguous memory.
+void train_step(NNTrainer *trainer, unsigned batch_length, const NNtype *inputs,
+                const NNtype *expected) {
+  assert(batch_length && inputs);
+  assert(expected);
+  assert(trainer);
+  NNNetwork *network = trainer->network;
+  assert(network && "trainer must be initialised before training");
+
+  memset(trainer->slopes, 0, trainer->slopes_length * sizeof(NNtype));
+
+  for (unsigned input_batch_idx = 0; input_batch_idx < batch_length;
+       input_batch_idx++) {
+    const NNtype *input_batch =
+        inputs + network->layers[0].input_length * input_batch_idx;
+
+    calculate_output_gradient(
+        trainer, input_batch,
+        &expected[network->final_output_length * input_batch_idx]);
+
+    calculate_layers_delta(trainer, NULL);
+
+    calculate_network_slopes(trainer, input_batch);
+  }
+
+  apply_slopes(trainer, trainer->learning_rate, batch_length);
 }
 
 static unsigned test_checks_passing = 0;
@@ -1357,7 +1362,7 @@ void compare_numeric_backprop_slopes(NNNetwork *network, NNLossType loss_type) {
 
   calculate_batch_slope_numeric(&numeric_trainer, 4, &inputs[0][0],
                                 &expected[0][0]);
-  batch_backpropagation_step(&trainer, 4, &inputs[0][0], &expected[0][0]);
+  train_step(&trainer, 4, &inputs[0][0], &expected[0][0]);
 
   for (unsigned slope_idx = 0; slope_idx < trainer.slopes_length; slope_idx++) {
     // backpropagation only divides slopes by batch length when applying them,
@@ -1401,6 +1406,7 @@ void test_trainer() {
 
     NNtype xor_inputs[4][2] = {{0, 0}, {0, 1}, {1, 0}, {1, 1}};
     NNtype xor_expected[4][1] = {{0}, {1}, {1}, {0}};
+    NNtype last_layer_deltas[4] = {0, 0, 2, 4};
 
     // Set one weight wrong
     network.layers[0].weights[0] = 1;
@@ -1412,11 +1418,18 @@ void test_trainer() {
       calculate_output_gradient(&trainer, xor_inputs[input_idx],
                                 xor_expected[input_idx]);
 
-      calculate_layers_delta(&trainer,
-                             trainer.layer_deltas[network.layers_length - 1]);
+      calculate_layers_delta(&trainer, &last_layer_deltas[input_idx]);
 
       calculate_network_slopes(&trainer, xor_inputs[input_idx]);
     }
+
+    CHECK_FLOAT_TOL(trainer.layer_slopes[0][0], 1.5f * 4, 1e-6f, 1e-2f);
+    CHECK_FLOAT_TOL(trainer.layer_slopes[0][1], 1.0f * 4, 1e-6f, 1e-2f);
+    CHECK_FLOAT_TOL(trainer.layer_slopes[0][2], 0.5f * 4, 1e-6f, 1e-2f);
+
+    CHECK_FLOAT_TOL(trainer.layer_slopes[0][3], 0.0f * 4, 1e-6f, 1e-2f);
+    CHECK_FLOAT_TOL(trainer.layer_slopes[0][4], 1.5f * 4, 1e-6f, 1e-2f);
+    CHECK_FLOAT_TOL(trainer.layer_slopes[0][5], 0.5f * 4, 1e-6f, 1e-2f);
 
     CHECK_FLOAT_TOL(trainer.layer_slopes[1][0], 2.5f * 4, 1e-6f, 1e-2f);
     CHECK_FLOAT_TOL(trainer.layer_slopes[1][1], 0.5f * 4, 1e-6f, 1e-2f);
@@ -1512,15 +1525,13 @@ void test_trainer() {
     for (unsigned i = 0; i < 10; i++) {
       calculate_batch_slope_numeric(&numeric_trainer, 4, &xor_inputs[0][0],
                                     &xor_expected[0][0]);
-      batch_backpropagation_step(&trainer, 4, &xor_inputs[0][0],
-                                 &xor_expected[0][0]);
+      train_step(&trainer, 4, &xor_inputs[0][0], &xor_expected[0][0]);
 
       for (unsigned slope_idx = 0; slope_idx < trainer.slopes_length;
            slope_idx++) {
         CHECK_FLOAT_TOL(numeric_trainer.slopes[slope_idx],
                         trainer.slopes[slope_idx] / 4, 1e-3f, 0.01f);
       }
-      apply_slopes(&trainer, 0.1f, ARR_LENGTH(xor_inputs));
 
       NNtype batch_loss =
           calculate_batch_network_loss(trainer.network, trainer.loss_type, 4,
@@ -1555,7 +1566,6 @@ bool test_summary() {
 
 void bench_and_print() {
   const unsigned batch_length = 10;
-  const NNtype learning_rate = 0.1f;
 
   const unsigned input_length = 32;
   const unsigned expected_length = 10;
@@ -1584,41 +1594,31 @@ void bench_and_print() {
 
   init_network_weights(&network, &rng);
 
-  uint64_t backprop_min_time = UINT64_MAX;
-  uint64_t apply_slope_min_time = UINT64_MAX;
+  uint64_t train_step_min_time = UINT64_MAX;
   uint64_t feed_net_min_time = UINT64_MAX;
 
-  double backprop_average_time = 0;
-  double apply_slope_average_time = 0;
+  double train_step_average_time = 0;
   double feed_net_average_time = 0;
 
   unsigned warmup_runs = 1000;
   const unsigned runs = 10000;
 
   for (unsigned run = 0; warmup_runs || run < runs;) {
-    uint64_t backprop_time = get_time();
-    batch_backpropagation_step(&trainer, batch_length, &inputs[0][0],
-                               &expected[0][0]);
-    backprop_time = get_time() - backprop_time;
-
-    uint64_t apply_slope_time = get_time();
-    apply_slopes(&trainer, learning_rate, (unsigned)ARR_LENGTH(inputs));
-    apply_slope_time = get_time() - apply_slope_time;
+    uint64_t train_step_time = get_time();
+    train_step(&trainer, batch_length, &inputs[0][0], &expected[0][0]);
+    train_step_time = get_time() - train_step_time;
 
     uint64_t feed_net_time = get_time();
     feed_network(&network, &inputs[0][0]);
     feed_net_time = get_time() - feed_net_time;
 
-    if (backprop_min_time > backprop_time)
-      backprop_min_time = backprop_time;
-    if (apply_slope_min_time > apply_slope_time)
-      apply_slope_min_time = apply_slope_time;
+    if (train_step_min_time > train_step_time)
+      train_step_min_time = train_step_time;
     if (feed_net_min_time > feed_net_time)
       feed_net_min_time = feed_net_time;
 
     if (!warmup_runs) {
-      backprop_average_time += (double)backprop_time;
-      apply_slope_average_time += (double)apply_slope_time;
+      train_step_average_time += (double)train_step_time;
       feed_net_average_time += (double)feed_net_time;
     }
     if (warmup_runs)
@@ -1627,14 +1627,11 @@ void bench_and_print() {
       run++;
   }
 
-  backprop_average_time /= runs;
-  apply_slope_average_time /= runs;
+  train_step_average_time /= runs;
   feed_net_average_time /= runs;
 
-  printf("backprop => min: %lu avg %g\n", backprop_min_time,
-         backprop_average_time);
-  printf("apply_slope => min: %lu avg %g\n", apply_slope_min_time,
-         apply_slope_average_time);
+  printf("train_step => min: %lu avg %g\n", train_step_min_time,
+         train_step_average_time);
   printf("feed_net => min: %lu avg %g\n", feed_net_min_time,
          feed_net_average_time);
 
