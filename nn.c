@@ -740,8 +740,9 @@ void calculate_batch_slope_numeric(NNTrainer *trainer, unsigned inputs_length,
   }
 }
 
-const NNtype *calculate_output_gradient(NNTrainer *trainer, const NNtype *inputs,
-                                     const NNtype *expected) {
+const NNtype *calculate_output_gradient(NNTrainer *trainer,
+                                        const NNtype *inputs,
+                                        const NNtype *expected) {
   assert(inputs);
   assert(expected);
   assert(trainer);
@@ -776,7 +777,7 @@ void calculate_layers_delta(NNTrainer *trainer, const NNtype *output_gradient) {
   assert(network && "trainer must be initialised before training");
 
   {
-    if(output_gradient==NULL)
+    if (output_gradient == NULL)
       output_gradient = trainer->layer_deltas[network->layers_length - 1];
     NNtype *layer_deltas = trainer->layer_deltas[network->layers_length - 1];
     const NNLayer *layer = &network->layers[network->layers_length - 1];
@@ -905,17 +906,17 @@ void batch_backpropagation_step(NNTrainer *trainer, unsigned batch_length,
 
     calculate_network_slopes(trainer, input_batch);
   }
-
-  for (unsigned slope_idx = 0; slope_idx < trainer->slopes_length;
-       slope_idx++) {
-    trainer->slopes[slope_idx] /= (NNtype)batch_length;
-  }
 }
 
-void apply_slopes(NNTrainer *trainer, NNtype learning_rate) {
+void apply_slopes(NNTrainer *trainer, NNtype learning_rate,
+                  unsigned batch_length) {
   assert(trainer);
+  assert(batch_length);
+  assert(isfinite(learning_rate) && learning_rate != 0);
   NNNetwork *network = trainer->network;
   assert(network && "trainer must be initialised before training");
+
+  learning_rate /= (NNtype)batch_length;
 
   for (unsigned layer_idx = 0; layer_idx < network->layers_length;
        layer_idx++) {
@@ -1359,7 +1360,9 @@ void compare_numeric_backprop_slopes(NNNetwork *network, NNLossType loss_type) {
   batch_backpropagation_step(&trainer, 4, &inputs[0][0], &expected[0][0]);
 
   for (unsigned slope_idx = 0; slope_idx < trainer.slopes_length; slope_idx++) {
-    CHECK_FLOAT_TOL(trainer.slopes[slope_idx],
+    // backpropagation only divides slopes by batch length when applying them,
+    // so we do it here instead
+    CHECK_FLOAT_TOL(trainer.slopes[slope_idx] / 4,
                     numeric_trainer.slopes[slope_idx], 0.003f, 1e-2f);
   }
 
@@ -1386,6 +1389,38 @@ void test_trainer() {
     CHECK_FLOAT_TOL(trainer.layer_slopes[1][0], 2.5f, 1e-6f, 1e-2f);
     CHECK_FLOAT_TOL(trainer.layer_slopes[1][1], 0.5f, 1e-6f, 1e-2f);
     CHECK_FLOAT_TOL(trainer.layer_slopes[1][2], 1.5f, 1e-6f, 1e-2f);
+
+    free_network(&network);
+    free_trainer(&trainer);
+  }
+  TEST_BLOCK("xor train manually") {
+    NNNetwork network = {0};
+    init_xor_network(&network);
+    NNTrainer trainer = {0};
+    init_trainer(&trainer, &network);
+
+    NNtype xor_inputs[4][2] = {{0, 0}, {0, 1}, {1, 0}, {1, 1}};
+    NNtype xor_expected[4][1] = {{0}, {1}, {1}, {0}};
+
+    // Set one weight wrong
+    network.layers[0].weights[0] = 1;
+
+    memset(trainer.slopes, 0, trainer.slopes_length * sizeof(NNtype));
+
+    for (unsigned input_idx = 0; input_idx < ARR_LENGTH(xor_inputs);
+         input_idx++) {
+      calculate_output_gradient(&trainer, xor_inputs[input_idx],
+                                xor_expected[input_idx]);
+
+      calculate_layers_delta(&trainer,
+                             trainer.layer_deltas[network.layers_length - 1]);
+
+      calculate_network_slopes(&trainer, xor_inputs[input_idx]);
+    }
+
+    CHECK_FLOAT_TOL(trainer.layer_slopes[1][0], 2.5f * 4, 1e-6f, 1e-2f);
+    CHECK_FLOAT_TOL(trainer.layer_slopes[1][1], 0.5f * 4, 1e-6f, 1e-2f);
+    CHECK_FLOAT_TOL(trainer.layer_slopes[1][2], 1.5f * 4, 1e-6f, 1e-2f);
 
     free_network(&network);
     free_trainer(&trainer);
@@ -1483,9 +1518,9 @@ void test_trainer() {
       for (unsigned slope_idx = 0; slope_idx < trainer.slopes_length;
            slope_idx++) {
         CHECK_FLOAT_TOL(numeric_trainer.slopes[slope_idx],
-                        trainer.slopes[slope_idx], 1e-3f, 0.01f);
+                        trainer.slopes[slope_idx] / 4, 1e-3f, 0.01f);
       }
-      apply_slopes(&trainer, 0.1f);
+      apply_slopes(&trainer, 0.1f, ARR_LENGTH(xor_inputs));
 
       NNtype batch_loss =
           calculate_batch_network_loss(trainer.network, trainer.loss_type, 4,
@@ -1567,7 +1602,7 @@ void bench_and_print() {
     backprop_time = get_time() - backprop_time;
 
     uint64_t apply_slope_time = get_time();
-    apply_slopes(&trainer, learning_rate);
+    apply_slopes(&trainer, learning_rate, (unsigned)ARR_LENGTH(inputs));
     apply_slope_time = get_time() - apply_slope_time;
 
     uint64_t feed_net_time = get_time();
