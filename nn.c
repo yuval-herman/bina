@@ -739,7 +739,7 @@ void calculate_batch_slope_numeric(NNTrainer *trainer, unsigned inputs_length,
   }
 }
 
-const NNtype *calculate_output_delta(NNTrainer *trainer, const NNtype *inputs,
+const NNtype *calculate_output_gradient(NNTrainer *trainer, const NNtype *inputs,
                                      const NNtype *expected) {
   assert(inputs);
   assert(expected);
@@ -747,7 +747,6 @@ const NNtype *calculate_output_delta(NNTrainer *trainer, const NNtype *inputs,
   NNNetwork *network = trainer->network;
   assert(network && "trainer must be initialised before training");
 
-  memset(trainer->deltas, 0, trainer->deltas_length * sizeof(NNtype));
   feed_network(network, inputs);
 
   assert(trainer->network_loss_length == network->final_output_length);
@@ -757,37 +756,41 @@ const NNtype *calculate_output_delta(NNTrainer *trainer, const NNtype *inputs,
   loss_functions[trainer->loss_type].derivative(
       trainer->network_loss_length, trainer->network_loss, expected);
 
-  const NNLayer *layer = &network->layers[network->layers_length - 1];
   NNtype *layer_deltas = trainer->layer_deltas[network->layers_length - 1];
 
   for (unsigned neuron_idx = 0; neuron_idx < network->final_output_length;
        neuron_idx++) {
 
     layer_deltas[neuron_idx] = trainer->network_loss[neuron_idx];
-
-    layer_deltas[neuron_idx] *=
-        activation_functions[layer->activation_type].derivative(
-            layer->outputs[neuron_idx]);
   }
 
   return layer_deltas;
 }
 
 // `output_delta` can be set to NULL if this function is called after
-// `calculate_output_delta`.
-void calculate_layers_delta(NNTrainer *trainer, const NNtype *output_delta) {
+// `calculate_output_gradient`.
+void calculate_layers_delta(NNTrainer *trainer, const NNtype *output_gradient) {
   assert(trainer);
   NNNetwork *network = trainer->network;
   assert(network && "trainer must be initialised before training");
 
-  // The normal training functions within the library all use the trainer's own
-  // buffers. But we accept output_delta as a paramter for extra flexibility. If
-  // the function was called from within the library, there is no need to copy
-  // anything.
-  if (output_delta != NULL &&
-      trainer->layer_deltas[network->layers_length - 1] != output_delta) {
-    memcpy(trainer->layer_deltas[network->layers_length - 1], output_delta,
-            sizeof(*output_delta) * network->final_output_length);
+  {
+    if(output_gradient==NULL)
+      output_gradient = trainer->layer_deltas[network->layers_length - 1];
+    NNtype *layer_deltas = trainer->layer_deltas[network->layers_length - 1];
+    const NNLayer *layer = &network->layers[network->layers_length - 1];
+
+    for (unsigned neuron_idx = 0; neuron_idx < network->final_output_length;
+         neuron_idx++) {
+      layer_deltas[neuron_idx] =
+          output_gradient[neuron_idx] *
+          activation_functions[layer->activation_type].derivative(
+              layer->outputs[neuron_idx]);
+    }
+  }
+  for (NNtype *delta_p = trainer->deltas;
+       delta_p < trainer->layer_deltas[network->layers_length - 1]; delta_p++) {
+    *delta_p = 0;
   }
 
   for (unsigned layer_counter = 0; layer_counter < network->layers_length - 1;
@@ -893,10 +896,7 @@ void batch_backpropagation_step(NNTrainer *trainer, unsigned batch_length,
     const NNtype *input_batch =
         inputs + network->layers[0].input_length * input_batch_idx;
 
-    memset(trainer->deltas, 0, trainer->deltas_length * sizeof(NNtype));
-    feed_network(network, input_batch);
-
-    calculate_output_delta(
+    calculate_output_gradient(
         trainer, input_batch,
         &expected[network->final_output_length * input_batch_idx]);
 
