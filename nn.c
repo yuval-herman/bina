@@ -48,6 +48,7 @@ typedef struct {
   unsigned output_length; // biases and outputs have the same length
   NNActivationType activation_type;
   NNInitType init_type;
+  NNtype init_gain;
 } NNLayer;
 
 typedef struct {
@@ -152,7 +153,7 @@ static inline NNtype *get_weight(NNLayer *layer, unsigned output_idx,
   return layer->weights + output_idx * layer->input_length + weight_idx;
 }
 
-typedef void (*NNInitLayer)(NNLayer *layer, pcg32_random_t *rng);
+typedef void (*NNInitLayer)(NNLayer *layer, pcg32_random_t *rng, NNtype gain);
 typedef NNtype (*NNComputeLoss)(unsigned input_length, const NNtype *values,
                                 const NNtype *expected);
 // Loss derivative functions overwrite the `values` array
@@ -227,38 +228,43 @@ const struct {
                             .derivative = tanh_derivative},
 };
 
-static inline void noop_init(NNLayer *layer, pcg32_random_t *rng) {
+static inline void noop_init(NNLayer *layer, pcg32_random_t *rng, NNtype gain) {
   (void)layer;
   (void)rng;
+  (void)gain;
 }
 
-static inline void uniform_init(NNLayer *layer, pcg32_random_t *rng) {
+static inline void uniform_init(NNLayer *layer, pcg32_random_t *rng,
+                                NNtype gain) {
   for (unsigned weight_idx = 0;
        weight_idx < layer->output_length * layer->input_length; weight_idx++) {
-    layer->weights[weight_idx] = pcg32_float_range(rng, -1, 1);
+    layer->weights[weight_idx] = gain * pcg32_float_range(rng, -1, 1);
   }
   for (unsigned bias_idx = 0; bias_idx < layer->output_length; bias_idx++) {
-    layer->biases[bias_idx] = pcg32_float_range(rng, -1, 1);
+    layer->biases[bias_idx] = gain * pcg32_float_range(rng, -1, 1);
   }
 }
 
-static inline void he_init(NNLayer *layer, pcg32_random_t *rng) {
+static inline void he_init(NNLayer *layer, pcg32_random_t *rng, NNtype gain) {
   const NNtype boundary = sqrtf(6.0f / (NNtype)layer->input_length);
   for (unsigned weight_idx = 0;
        weight_idx < layer->output_length * layer->input_length; weight_idx++) {
-    layer->weights[weight_idx] = pcg32_float_range(rng, -boundary, boundary);
+    layer->weights[weight_idx] =
+        gain * pcg32_float_range(rng, -boundary, boundary);
   }
   for (unsigned bias_idx = 0; bias_idx < layer->output_length; bias_idx++) {
     layer->biases[bias_idx] = 0;
   }
 }
 
-static inline void xavier_init(NNLayer *layer, pcg32_random_t *rng) {
+static inline void xavier_init(NNLayer *layer, pcg32_random_t *rng,
+                               NNtype gain) {
   const NNtype boundary = sqrtf(
       6.0f / ((NNtype)layer->input_length + (NNtype)layer->output_length));
   for (unsigned weight_idx = 0;
        weight_idx < layer->output_length * layer->input_length; weight_idx++) {
-    layer->weights[weight_idx] = pcg32_float_range(rng, -boundary, boundary);
+    layer->weights[weight_idx] =
+        gain * pcg32_float_range(rng, -boundary, boundary);
   }
   for (unsigned bias_idx = 0; bias_idx < layer->output_length; bias_idx++) {
     layer->biases[bias_idx] = 0;
@@ -461,6 +467,7 @@ bool init_network(NNNetwork *network, unsigned layers_length,
         i < layers_length - 2 ? NN_RELU_ACTIVATION : NN_NO_ACTIVATION;
 
     layer->init_type = NN_UNIFORM_INIT;
+    layer->init_gain = 1.0f;
   }
 
   network->final_output = network->layers[network->layers_length - 1].outputs;
@@ -470,7 +477,7 @@ bool init_network(NNNetwork *network, unsigned layers_length,
 }
 
 void init_layer_weights(NNLayer *layer, pcg32_random_t *rng) {
-  init_functions[layer->init_type](layer, rng);
+  init_functions[layer->init_type](layer, rng, layer->init_gain);
 }
 
 void init_network_weights(NNNetwork *network, pcg32_random_t *rng) {
