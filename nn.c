@@ -1666,6 +1666,9 @@ void bench_and_print() {
          train_step_average_time);
   printf("feed_net => min: %lu avg %g\n", feed_net_min_time,
          feed_net_average_time);
+  printf("end loss => %g\n", (double)calculate_batch_network_loss(
+                                 &network, trainer.loss_type, batch_length,
+                                 &inputs[0][0], &expected[0][0]));
 
   free_network(&network);
   free_trainer(&trainer);
