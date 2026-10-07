@@ -114,7 +114,38 @@ static inline float pcg32_float_range(pcg32_random_t *rng, float min,
                                       float max) {
   float u = pcg32_uniform_float(rng);
   return min + u * (max - min);
-} // ================ PCG ================
+}
+
+static inline float pcg32_normal_float(pcg32_random_t *rng) {
+  // Generate two uniform floats in (0, 1] to avoid logf(0)
+  float u1 = 1.0f - pcg32_uniform_float(rng);
+  float u2 = 1.0f - pcg32_uniform_float(rng);
+
+  // Box-Muller transform
+  float radius = sqrtf(-2.0f * logf(u1));
+  float theta = 2.0f * (float)M_PI * u2;
+
+  return radius * cosf(theta);
+}
+
+static inline unsigned pcg32_categorical_sample(pcg32_random_t *rng,
+                                                unsigned length,
+                                                const NNtype *probabilities) {
+  float threshold = pcg32_uniform_float(rng);
+  float cumulative_prob = 0.0f;
+
+  for (unsigned i = 0; i < length; i++) {
+    cumulative_prob += probabilities[i];
+    if (threshold < cumulative_prob) {
+      return i;
+    }
+  }
+
+  // Fallback in case floating point imprecision causes the sum to be slightly
+  // less than 1.0
+  return length - 1;
+}
+// ================ PCG ================
 
 static inline NNtype *get_weight(NNLayer *layer, unsigned output_idx,
                                  unsigned weight_idx) {
