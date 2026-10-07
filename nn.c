@@ -41,6 +41,12 @@ typedef enum {
   NN_LOSS_COUNT__,
 } NNLossType;
 
+typedef enum {
+  NN_SDG_OPTIMIZER = 0,
+  NN_MOMENTUM_OPTIMIZER,
+  NN_OPTIMIZER_COUNT__,
+} NNOptimizerType;
+
 typedef struct {
   NNtype *weights;
   unsigned input_length; // weights length are input * output
@@ -70,6 +76,8 @@ typedef struct {
   unsigned slopes_length;
   NNtype *deltas;
   unsigned deltas_length;
+  NNtype *velocities;
+  unsigned velocities_length;
   NNtype *network_loss;
   unsigned network_loss_length;
   // This array containes pointers to the start of each layer's slope values.
@@ -77,7 +85,9 @@ typedef struct {
   // This array containes pointers to the start of each layer's delta values.
   NNtype **layer_deltas;
   NNLossType loss_type;
+  NNOptimizerType optimizer_type;
   NNtype learning_rate;
+  NNtype momentum_keep;
 } NNTrainer;
 
 // ================ PCG ================
@@ -510,7 +520,8 @@ void free_network(NNNetwork *network) {
   *network = (NNNetwork){0};
 }
 
-bool init_trainer(NNTrainer *trainer, NNNetwork *network) {
+bool init_trainer(NNTrainer *trainer, NNNetwork *network,
+                  NNOptimizerType optimizer_type) {
   assert(trainer);
   assert(network);
   assert(network->layers_length && network->memory_start &&
@@ -528,14 +539,25 @@ bool init_trainer(NNTrainer *trainer, NNNetwork *network) {
     deltas_length += l.output_length;
   }
 
-  NNtype *slopes_memory = malloc(slopes_length * sizeof(NNtype));
-  if (slopes_memory == NULL) {
-    return false;
+  unsigned velocities_length = 0;
+  switch (optimizer_type) {
+  case NN_SDG_OPTIMIZER:
+    break;
+  case NN_MOMENTUM_OPTIMIZER:
+    velocities_length = slopes_length;
+    break;
+
+  case NN_OPTIMIZER_COUNT__:
+  default:
+    assert(!"Invalid optimizer type");
   }
 
-  NNtype *deltas_memory = malloc(deltas_length * sizeof(NNtype));
-  if (deltas_memory == NULL) {
-    free(slopes_memory);
+  // calloc because we need to zero out velocities at first, and usually the OS
+  // gives zeroed out memory anyways so its more efficient to use calloc for the
+  // whole thing then memset just the velocities part.
+  NNtype *slopes_memory =
+      calloc(slopes_length + velocities_length + deltas_length, sizeof(NNtype));
+  if (slopes_memory == NULL) {
     return false;
   }
 
@@ -544,7 +566,6 @@ bool init_trainer(NNTrainer *trainer, NNNetwork *network) {
 
   if (trainer->layer_slopes == NULL) {
     free(slopes_memory);
-    free(deltas_memory);
     return false;
   }
 
@@ -553,7 +574,6 @@ bool init_trainer(NNTrainer *trainer, NNNetwork *network) {
 
   if (trainer->layer_deltas == NULL) {
     free(slopes_memory);
-    free(deltas_memory);
     free(trainer->layer_slopes);
     return false;
   }
@@ -563,19 +583,25 @@ bool init_trainer(NNTrainer *trainer, NNNetwork *network) {
 
   if (trainer->network_loss == NULL) {
     free(slopes_memory);
-    free(deltas_memory);
     free(trainer->layer_slopes);
     free(trainer->layer_deltas);
     return false;
   }
 
-  trainer->network = network;
   trainer->slopes = slopes_memory;
-  trainer->deltas = deltas_memory;
+  trainer->deltas = trainer->slopes + slopes_length;
+  trainer->velocities = optimizer_type == NN_SDG_OPTIMIZER
+                            ? NULL
+                            : trainer->deltas + deltas_length;
+
   trainer->slopes_length = slopes_length;
   trainer->deltas_length = deltas_length;
+  trainer->velocities_length = velocities_length;
+
+  trainer->network = network;
   trainer->network_loss_length = network->final_output_length;
-  trainer->learning_rate = 0.1f;
+  trainer->learning_rate = 0.01f;
+  trainer->momentum_keep = 0.9f;
 
   trainer->layer_slopes[0] = trainer->slopes;
   trainer->layer_deltas[0] = trainer->deltas;
@@ -589,15 +615,14 @@ bool init_trainer(NNTrainer *trainer, NNNetwork *network) {
     trainer->layer_deltas[i + 1] = trainer->layer_deltas[i] + l.output_length;
   }
 
-  // mse is the default loss type
   trainer->loss_type = NN_MSE_LOSS;
+  trainer->optimizer_type = optimizer_type;
 
   return true;
 }
 
 void free_trainer(NNTrainer *trainer) {
   free(trainer->slopes);
-  free(trainer->deltas);
   free(trainer->layer_slopes);
   free(trainer->layer_deltas);
   free(trainer->network_loss);
@@ -893,19 +918,44 @@ void apply_slopes(NNTrainer *trainer, NNtype learning_rate,
 
   learning_rate /= (NNtype)batch_length;
 
+  if (trainer->optimizer_type == NN_MOMENTUM_OPTIMIZER)
+    for (unsigned slope_idx = 0; slope_idx < trainer->slopes_length;
+         slope_idx++) {
+      trainer->velocities[slope_idx] =
+          trainer->momentum_keep * trainer->velocities[slope_idx] +
+          trainer->slopes[slope_idx];
+    }
+
   for (unsigned layer_idx = 0; layer_idx < network->layers_length;
        layer_idx++) {
     const NNLayer layer = network->layers[layer_idx];
     const unsigned weights_length = layer.input_length * layer.output_length;
 
     for (unsigned weight_idx = 0; weight_idx < weights_length; weight_idx++) {
-      layer.weights[weight_idx] -=
-          trainer->layer_slopes[layer_idx][weight_idx] * learning_rate;
+      if (trainer->optimizer_type == NN_SDG_OPTIMIZER) {
+        layer.weights[weight_idx] -=
+            trainer->layer_slopes[layer_idx][weight_idx] * learning_rate;
+      } else {
+        const unsigned velocity_idx =
+            (unsigned)(&trainer->layer_slopes[layer_idx][weight_idx] -
+                       trainer->slopes);
+        layer.weights[weight_idx] -=
+            trainer->velocities[velocity_idx] * learning_rate;
+      }
     }
     for (unsigned bias_idx = 0; bias_idx < layer.output_length; bias_idx++) {
-      layer.biases[bias_idx] -=
-          trainer->layer_slopes[layer_idx][weights_length + bias_idx] *
-          learning_rate;
+      if (trainer->optimizer_type == NN_SDG_OPTIMIZER) {
+        layer.biases[bias_idx] -=
+            trainer->layer_slopes[layer_idx][weights_length + bias_idx] *
+            learning_rate;
+      } else {
+        const unsigned velocity_idx =
+            (unsigned)(&trainer->layer_slopes[layer_idx]
+                                             [weights_length + bias_idx] -
+                       trainer->slopes);
+        layer.biases[bias_idx] -=
+            trainer->velocities[velocity_idx] * learning_rate;
+      }
     }
   }
 }
@@ -1350,9 +1400,9 @@ void test_network() {
 
 void compare_numeric_backprop_slopes(NNNetwork *network, NNLossType loss_type) {
   NNTrainer numeric_trainer = {0};
-  init_trainer(&numeric_trainer, network);
+  init_trainer(&numeric_trainer, network, NN_MOMENTUM_OPTIMIZER);
   NNTrainer trainer = {0};
-  init_trainer(&trainer, network);
+  init_trainer(&trainer, network, NN_MOMENTUM_OPTIMIZER);
 
   numeric_trainer.loss_type = loss_type;
   trainer.loss_type = loss_type;
@@ -1380,7 +1430,7 @@ void test_trainer() {
     NNNetwork network = {0};
     init_xor_network(&network);
     NNTrainer trainer = {0};
-    init_trainer(&trainer, &network);
+    init_trainer(&trainer, &network, NN_MOMENTUM_OPTIMIZER);
 
     NNtype xor_inputs[4][2] = {{0, 0}, {0, 1}, {1, 0}, {1, 1}};
     NNtype xor_expected[4][1] = {{0}, {1}, {1}, {0}};
@@ -1402,7 +1452,7 @@ void test_trainer() {
     NNNetwork network = {0};
     init_xor_network(&network);
     NNTrainer trainer = {0};
-    init_trainer(&trainer, &network);
+    init_trainer(&trainer, &network, NN_MOMENTUM_OPTIMIZER);
 
     NNtype xor_inputs[4][2] = {{0, 0}, {0, 1}, {1, 0}, {1, 1}};
     NNtype xor_expected[4][1] = {{0}, {1}, {1}, {0}};
@@ -1511,9 +1561,9 @@ void test_trainer() {
     }
 
     NNTrainer numeric_trainer = {0};
-    init_trainer(&numeric_trainer, &network);
+    init_trainer(&numeric_trainer, &network, NN_MOMENTUM_OPTIMIZER);
     NNTrainer trainer = {0};
-    init_trainer(&trainer, &network);
+    init_trainer(&trainer, &network, NN_MOMENTUM_OPTIMIZER);
 
     NNtype xor_inputs[4][2] = {{0, 0}, {0, 1}, {1, 0}, {1, 1}};
     NNtype xor_expected[4][1] = {{0}, {1}, {1}, {0}};
@@ -1622,7 +1672,8 @@ void bench_and_print() {
   unsigned network_layers[] = {input_length, 32, 32, expected_length};
   init_network(&network, ARR_LENGTH(network_layers), network_layers);
   NNTrainer trainer = {0};
-  init_trainer(&trainer, &network);
+  init_trainer(&trainer, &network, NN_MOMENTUM_OPTIMIZER);
+  trainer.learning_rate = 9e-4f;
 
   init_network_weights(&network, &rng);
 
