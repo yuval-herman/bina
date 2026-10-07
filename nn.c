@@ -10,6 +10,7 @@
 #define ANSI_RED "\033[31m"
 #define ANSI_GREEN "\033[32m"
 #define ANSI_YELLOW "\033[33m"
+#define ANSI_MAGENTA "\033[95m"
 #define ANSI_RESET "\033[0m"
 
 #define ARR_LENGTH(arr) (sizeof(arr) / sizeof(arr[0]))
@@ -947,7 +948,7 @@ static unsigned test_block_failing_;
        test_block_latch_ = false,                                              \
       test_block_failing_ == 0                                                 \
            ? (void)test_passing++                                              \
-           : printf(ANSI_YELLOW name                                           \
+           : printf(ANSI_MAGENTA name                                          \
                     " test failed! (line %d)\n%u checks are failing"           \
                     "\n" ANSI_RESET,                                           \
                     ##__VA_ARGS__, __LINE__, test_block_failing_))
@@ -1367,7 +1368,7 @@ void compare_numeric_backprop_slopes(NNNetwork *network, NNLossType loss_type) {
 }
 
 void test_trainer() {
-  TEST_BLOCK("xor trainer") {
+  TEST_BLOCK("xor numeric trainer") {
     NNNetwork network = {0};
     init_xor_network(&network);
     NNTrainer trainer = {0};
@@ -1504,7 +1505,7 @@ bool test_summary() {
   if (test_count > test_checks_passing ||
       test_check_count > test_checks_passing) {
     const unsigned failing_tests = test_count - test_passing;
-    printf("ran %u tests, with %u (%.3g%%) failing.\n", test_count,
+    printf("\n\nran %u tests, with %u (%.3g%%) failing.\n", test_count,
            failing_tests, ((double)failing_tests / test_count) * 100);
     const unsigned failing_test_checks = test_check_count - test_checks_passing;
     printf("ran %u checks, with %u (%.3g%%) failing.\n", test_check_count,
