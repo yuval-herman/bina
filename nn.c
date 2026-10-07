@@ -171,6 +171,7 @@ typedef NNtype (*NNComputeLoss)(unsigned input_length, const NNtype *values,
 // Loss derivative functions overwrite the `values` array
 typedef void (*NNComputeLossDerivative)(unsigned input_length, NNtype *values,
                                         const NNtype *expected);
+typedef void (*NNOptimizer)(NNTrainer *trainer, NNtype learning_rate);
 
 static inline uint64_t get_time(void) {
   struct timespec ts;
@@ -424,6 +425,70 @@ const struct {
             .loss = cross_entropy_loss,
             .derivative = cross_entropy_loss_derivative,
         },
+};
+
+void SDG_optimizer(NNTrainer *trainer, NNtype learning_rate) {
+  assert(trainer);
+  assert(isfinite(learning_rate) && learning_rate != 0);
+  NNNetwork *network = trainer->network;
+  assert(network && "trainer must be initialised before training");
+
+  for (unsigned layer_idx = 0; layer_idx < network->layers_length;
+       layer_idx++) {
+    const NNLayer layer = network->layers[layer_idx];
+    const unsigned weights_length = layer.input_length * layer.output_length;
+
+    for (unsigned weight_idx = 0; weight_idx < weights_length; weight_idx++) {
+      layer.weights[weight_idx] -=
+          trainer->layer_slopes[layer_idx][weight_idx] * learning_rate;
+    }
+    for (unsigned bias_idx = 0; bias_idx < layer.output_length; bias_idx++) {
+      layer.biases[bias_idx] -=
+          trainer->layer_slopes[layer_idx][weights_length + bias_idx] *
+          learning_rate;
+    }
+  }
+}
+
+void momentum_optimizer(NNTrainer *trainer, NNtype learning_rate) {
+  assert(trainer);
+  assert(isfinite(learning_rate) && learning_rate != 0);
+  NNNetwork *network = trainer->network;
+  assert(network && "trainer must be initialised before training");
+
+  for (unsigned slope_idx = 0; slope_idx < trainer->slopes_length;
+       slope_idx++) {
+    trainer->velocities[slope_idx] =
+        trainer->momentum_keep * trainer->velocities[slope_idx] +
+        trainer->slopes[slope_idx];
+  }
+
+  for (unsigned layer_idx = 0; layer_idx < network->layers_length;
+       layer_idx++) {
+    const NNLayer layer = network->layers[layer_idx];
+    const unsigned weights_length = layer.input_length * layer.output_length;
+
+    for (unsigned weight_idx = 0; weight_idx < weights_length; weight_idx++) {
+      const unsigned velocity_idx =
+          (unsigned)(&trainer->layer_slopes[layer_idx][weight_idx] -
+                     trainer->slopes);
+      layer.weights[weight_idx] -=
+          trainer->velocities[velocity_idx] * learning_rate;
+    }
+    for (unsigned bias_idx = 0; bias_idx < layer.output_length; bias_idx++) {
+      const unsigned velocity_idx =
+          (unsigned)(&trainer
+                          ->layer_slopes[layer_idx][weights_length + bias_idx] -
+                     trainer->slopes);
+      layer.biases[bias_idx] -=
+          trainer->velocities[velocity_idx] * learning_rate;
+    }
+  }
+}
+
+const NNOptimizer optimizer_functions[] = {
+    [NN_SDG_OPTIMIZER] = SDG_optimizer,
+    [NN_MOMENTUM_OPTIMIZER] = momentum_optimizer,
 };
 
 // layers_neurons is a count of how many outputs a layer has. The first items
@@ -913,51 +978,10 @@ void apply_slopes(NNTrainer *trainer, NNtype learning_rate,
   assert(trainer);
   assert(batch_length);
   assert(isfinite(learning_rate) && learning_rate != 0);
-  NNNetwork *network = trainer->network;
-  assert(network && "trainer must be initialised before training");
 
   learning_rate /= (NNtype)batch_length;
 
-  if (trainer->optimizer_type == NN_MOMENTUM_OPTIMIZER)
-    for (unsigned slope_idx = 0; slope_idx < trainer->slopes_length;
-         slope_idx++) {
-      trainer->velocities[slope_idx] =
-          trainer->momentum_keep * trainer->velocities[slope_idx] +
-          trainer->slopes[slope_idx];
-    }
-
-  for (unsigned layer_idx = 0; layer_idx < network->layers_length;
-       layer_idx++) {
-    const NNLayer layer = network->layers[layer_idx];
-    const unsigned weights_length = layer.input_length * layer.output_length;
-
-    for (unsigned weight_idx = 0; weight_idx < weights_length; weight_idx++) {
-      if (trainer->optimizer_type == NN_SDG_OPTIMIZER) {
-        layer.weights[weight_idx] -=
-            trainer->layer_slopes[layer_idx][weight_idx] * learning_rate;
-      } else {
-        const unsigned velocity_idx =
-            (unsigned)(&trainer->layer_slopes[layer_idx][weight_idx] -
-                       trainer->slopes);
-        layer.weights[weight_idx] -=
-            trainer->velocities[velocity_idx] * learning_rate;
-      }
-    }
-    for (unsigned bias_idx = 0; bias_idx < layer.output_length; bias_idx++) {
-      if (trainer->optimizer_type == NN_SDG_OPTIMIZER) {
-        layer.biases[bias_idx] -=
-            trainer->layer_slopes[layer_idx][weights_length + bias_idx] *
-            learning_rate;
-      } else {
-        const unsigned velocity_idx =
-            (unsigned)(&trainer->layer_slopes[layer_idx]
-                                             [weights_length + bias_idx] -
-                       trainer->slopes);
-        layer.biases[bias_idx] -=
-            trainer->velocities[velocity_idx] * learning_rate;
-      }
-    }
-  }
+  optimizer_functions[trainer->optimizer_type](trainer, learning_rate);
 }
 
 // Calculates and applies a single training step for a batch of inputs.
