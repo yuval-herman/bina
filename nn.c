@@ -163,6 +163,47 @@ static inline unsigned pcg32_categorical_sample(pcg32_random_t *rng,
   // less than 1.0
   return length - 1;
 }
+
+// Generates a number between [0, range)
+static inline uint32_t pcg32_bounded_rand(pcg32_random_t *rng, uint32_t range) {
+  uint32_t x = pcg32_random_r(rng);
+  uint64_t m = (uint64_t)x * (uint64_t)range;
+  uint32_t l = (uint32_t)m;
+  if (l < range) {
+    uint32_t t = -range;
+    if (t >= range) {
+      t -= range;
+      if (t >= range)
+        t %= range;
+    }
+    while (l < t) {
+      x = pcg32_random_r(rng);
+      m = (uint64_t)x * (uint64_t)range;
+      l = (uint32_t)m;
+    }
+  }
+  return (uint32_t)(m >> 32);
+}
+
+// Generates a number between [min, max)
+static inline uint32_t pcg32_int_range(pcg32_random_t *rng, uint32_t min,
+                                       uint32_t max) {
+  return pcg32_bounded_rand(rng, max + min) + min;
+}
+
+static inline void pcg32_shuffle_index_array(pcg32_random_t *rng,
+                                             unsigned length,
+                                             unsigned *index_array) {
+  if (length < 2)
+    return;
+
+  for (unsigned idx = length; idx > 1; --idx) {
+    unsigned swap_idx = pcg32_int_range(rng, 0, idx);
+    unsigned temp = index_array[idx - 1];
+    index_array[idx - 1] = index_array[swap_idx];
+    index_array[swap_idx] = temp;
+  }
+}
 // ================ PCG ================
 
 static inline NNtype *get_weight(NNLayer *layer, unsigned output_idx,
@@ -1181,6 +1222,9 @@ static unsigned test_step_failing_;
           float_equals_tolerance(got, expected, a_tolerance, r_tolerance),     \
       "%g")
 
+#define CHECK_UINT(got, expected)                                              \
+  CHECK_REGISTER((got), (expected), (got) == (expected), "%u")
+
 void test_neuron() {
   NNtype inputs[] = {1, 1};
   NNtype weights[] = {1, 1};
@@ -1944,6 +1988,52 @@ void bench_and_print() {
   free_trainer(&trainer);
 }
 
+void test_helpers() {
+  TEST_BLOCK("shuffle") {
+#define INDICES_LENGTH 5
+    unsigned indices[INDICES_LENGTH];
+    unsigned indices_appearance[INDICES_LENGTH] = {0};
+    pcg32_random_t rng;
+    pcg32_srandom_r(&rng, 0, 0);
+
+    TEST_STEP("indices appear once") {
+      for (unsigned i = 0; i < INDICES_LENGTH; i++) {
+        indices[i] = i;
+      }
+
+      pcg32_shuffle_index_array(&rng, INDICES_LENGTH, indices);
+
+      for (unsigned i = 0; i < INDICES_LENGTH; i++) {
+        indices_appearance[indices[i]]++;
+      }
+      for (unsigned i = 0; i < INDICES_LENGTH; i++) {
+        CHECK_UINT(indices_appearance[i], 1);
+      }
+    }
+
+    TEST_STEP("indices changed order") {
+      const unsigned step_count = 100;
+      float unchange_avg = 0;
+      for (unsigned step = 0; step < step_count; step++) {
+        unsigned unchanged_count = INDICES_LENGTH;
+        for (unsigned i = 0; i < INDICES_LENGTH; i++) {
+          indices[i] = i;
+        }
+
+        pcg32_shuffle_index_array(&rng, INDICES_LENGTH, indices);
+        for (unsigned i = 0; i < INDICES_LENGTH; i++) {
+          if (indices[i] != i)
+            unchanged_count--;
+        }
+        unchange_avg += (float)unchanged_count;
+      }
+      unchange_avg /= (float)step_count;
+      CHECK_FLOAT_TOL(unchange_avg, 1.0f, 5 / sqrtf((float)(step_count)), 0);
+    }
+#undef INDICES_LENGTH
+  }
+}
+
 #ifdef NN_MAIN
 int main(void) {
 #ifndef NDEBUG
@@ -1952,6 +2042,7 @@ int main(void) {
   test_network();
   test_loss();
   test_trainer();
+  test_helpers();
   if (!test_summary())
     return 1;
 #else
