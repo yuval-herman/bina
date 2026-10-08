@@ -44,6 +44,7 @@ typedef enum {
 typedef enum {
   NN_SDG_OPTIMIZER = 0,
   NN_MOMENTUM_OPTIMIZER,
+  NN_ADAM_OPTIMIZER,
   NN_OPTIMIZER_COUNT__,
 } NNOptimizerType;
 
@@ -84,10 +85,14 @@ typedef struct {
   NNtype **layer_slopes;
   // This array containes pointers to the start of each layer's delta values.
   NNtype **layer_deltas;
+  unsigned steps;
   NNLossType loss_type;
   NNOptimizerType optimizer_type;
   NNtype learning_rate;
-  NNtype momentum_keep;
+  NNtype momentum_damp;
+  NNtype adam_damp;
+  NNtype p;  // used in adam as running power
+  NNtype p2; // used in adam as running power
 } NNTrainer;
 
 // ================ PCG ================
@@ -171,7 +176,8 @@ typedef NNtype (*NNComputeLoss)(unsigned input_length, const NNtype *values,
 // Loss derivative functions overwrite the `values` array
 typedef void (*NNComputeLossDerivative)(unsigned input_length, NNtype *values,
                                         const NNtype *expected);
-typedef void (*NNOptimizer)(NNTrainer *trainer, NNtype learning_rate);
+typedef void (*NNOptimizer)(NNTrainer *trainer, NNtype learning_rate,
+                            unsigned batch_length);
 
 static inline uint64_t get_time(void) {
   struct timespec ts;
@@ -427,11 +433,15 @@ static const struct {
         },
 };
 
-void SDG_optimizer(NNTrainer *trainer, NNtype learning_rate) {
+void SDG_optimizer(NNTrainer *trainer, NNtype learning_rate,
+                   unsigned batch_length) {
+  assert(batch_length);
   assert(trainer);
   assert(isfinite(learning_rate) && learning_rate != 0);
   NNNetwork *network = trainer->network;
   assert(network && "trainer must be initialised before training");
+
+  learning_rate /= (NNtype)batch_length;
 
   for (unsigned layer_idx = 0; layer_idx < network->layers_length;
        layer_idx++) {
@@ -451,15 +461,19 @@ void SDG_optimizer(NNTrainer *trainer, NNtype learning_rate) {
   }
 }
 
-void momentum_optimizer(NNTrainer *trainer, NNtype learning_rate) {
+void momentum_optimizer(NNTrainer *trainer, NNtype learning_rate,
+                        unsigned batch_length) {
+  assert(batch_length);
   assert(trainer);
   assert(isfinite(learning_rate) && learning_rate != 0);
   NNNetwork *network = trainer->network;
   assert(network && "trainer must be initialised before training");
 
+  learning_rate /= (NNtype)batch_length;
+
 #define apply_slope(param, slope) (param -= slope * learning_rate)
-#define update_velocity(velocity, slope)                                       \
-  (velocity = trainer->momentum_damp * velocity + slope)
+#define update_momentum(momentum, slope)                                       \
+  (momentum = trainer->momentum_damp * momentum + slope)
 
   for (unsigned layer_idx = 0; layer_idx < network->layers_length;
        layer_idx++) {
@@ -470,7 +484,7 @@ void momentum_optimizer(NNTrainer *trainer, NNtype learning_rate) {
       const unsigned velocity_idx =
           (unsigned)(&trainer->layer_slopes[layer_idx][weight_idx] -
                      trainer->slopes);
-      update_velocity(trainer->velocities[velocity_idx],
+      update_momentum(trainer->velocities[velocity_idx],
                       trainer->layer_slopes[layer_idx][weight_idx]);
 
       apply_slope(layer.weights[weight_idx], trainer->velocities[velocity_idx]);
@@ -481,7 +495,7 @@ void momentum_optimizer(NNTrainer *trainer, NNtype learning_rate) {
           (unsigned)(&trainer
                           ->layer_slopes[layer_idx][weights_length + bias_idx] -
                      trainer->slopes);
-      update_velocity(
+      update_momentum(
           trainer->velocities[velocity_idx],
           trainer->layer_slopes[layer_idx][weights_length + bias_idx]);
 
@@ -489,8 +503,32 @@ void momentum_optimizer(NNTrainer *trainer, NNtype learning_rate) {
     }
   }
 #undef apply_slope
-#undef update_velocity
+#undef update_momentum
 }
+
+void adam_optimizer(NNTrainer *trainer, NNtype learning_rate,
+                    unsigned batch_length) {
+  (void)batch_length;
+
+  assert(trainer);
+  assert(isfinite(learning_rate) && learning_rate != 0);
+  NNNetwork *network = trainer->network;
+  assert(network && "trainer must be initialised before training");
+
+#define apply_slope(param, momentum, velocity)                                 \
+  (param -= learning_rate * (momentum / (1 - trainer->p)) /                    \
+            (sqrtf(velocity / (1 - trainer->p2)) + 1e-8f))
+#define update_velocities(momentum, velocity, slope)                           \
+  do {                                                                         \
+    momentum = trainer->momentum_damp * momentum +                             \
+               (1 - trainer->momentum_damp) * slope;                           \
+    velocity = trainer->adam_damp * velocity +                                 \
+               (1 - trainer->adam_damp) * slope * slope;                       \
+  } while (0)
+
+  trainer->p *= trainer->momentum_damp;
+  trainer->p2 *= trainer->adam_damp;
+
   for (unsigned layer_idx = 0; layer_idx < network->layers_length;
        layer_idx++) {
     const NNLayer layer = network->layers[layer_idx];
@@ -500,12 +538,13 @@ void momentum_optimizer(NNTrainer *trainer, NNtype learning_rate) {
       const unsigned velocity_idx =
           (unsigned)(&trainer->layer_slopes[layer_idx][weight_idx] -
                      trainer->slopes);
-      trainer->velocities[velocity_idx] =
-          trainer->momentum_damp * trainer->velocities[velocity_idx] +
-          layer.weights[weight_idx];
+      const unsigned adam_idx = trainer->velocities_length - velocity_idx - 1;
+      update_velocities(trainer->velocities[velocity_idx],
+                        trainer->velocities[adam_idx],
+                        trainer->layer_slopes[layer_idx][weight_idx]);
 
-      layer.weights[weight_idx] -=
-          trainer->velocities[velocity_idx] * learning_rate;
+      apply_slope(layer.weights[weight_idx], trainer->velocities[velocity_idx],
+                  trainer->velocities[adam_idx]);
     }
 
     for (unsigned bias_idx = 0; bias_idx < layer.output_length; bias_idx++) {
@@ -513,19 +552,38 @@ void momentum_optimizer(NNTrainer *trainer, NNtype learning_rate) {
           (unsigned)(&trainer
                           ->layer_slopes[layer_idx][weights_length + bias_idx] -
                      trainer->slopes);
-      trainer->velocities[velocity_idx] =
-          trainer->momentum_damp * trainer->velocities[velocity_idx] +
-          layer.weights[bias_idx];
+      const unsigned adam_idx = trainer->velocities_length - velocity_idx - 1;
+      update_velocities(
+          trainer->velocities[velocity_idx], trainer->velocities[adam_idx],
+          trainer->layer_slopes[layer_idx][weights_length + bias_idx]);
 
-      layer.biases[bias_idx] -=
-          trainer->velocities[velocity_idx] * learning_rate;
+      apply_slope(layer.biases[bias_idx], trainer->velocities[velocity_idx],
+                  trainer->velocities[adam_idx]);
     }
+  }
+#undef apply_slope
+#undef update_momentum
+}
+
+static char *optimizer_function_name(NNOptimizerType optimizer_type) {
+  switch (optimizer_type) {
+  default:
+    assert(!"impossible optimizer type");
+    return "impossible optimizer type";
+
+  case NN_SDG_OPTIMIZER:
+    return "SDG";
+  case NN_MOMENTUM_OPTIMIZER:
+    return "momentum";
+  case NN_ADAM_OPTIMIZER:
+    return "adam";
   }
 }
 
 static const NNOptimizer optimizer_functions[] = {
     [NN_SDG_OPTIMIZER] = SDG_optimizer,
     [NN_MOMENTUM_OPTIMIZER] = momentum_optimizer,
+    [NN_ADAM_OPTIMIZER] = adam_optimizer,
 };
 
 // layers_neurons is a count of how many outputs a layer has. The first items
@@ -648,6 +706,9 @@ bool init_trainer(NNTrainer *trainer, NNNetwork *network,
   case NN_MOMENTUM_OPTIMIZER:
     velocities_length = slopes_length;
     break;
+  case NN_ADAM_OPTIMIZER:
+    velocities_length = slopes_length * 2;
+    break;
 
   case NN_OPTIMIZER_COUNT__:
   default:
@@ -703,7 +764,8 @@ bool init_trainer(NNTrainer *trainer, NNNetwork *network,
   trainer->network = network;
   trainer->network_loss_length = network->final_output_length;
   trainer->learning_rate = 0.01f;
-  trainer->momentum_keep = 0.9f;
+  trainer->momentum_damp = 0.9f;
+  trainer->adam_damp = 0.999f;
 
   trainer->layer_slopes[0] = trainer->slopes;
   trainer->layer_deltas[0] = trainer->deltas;
@@ -717,6 +779,9 @@ bool init_trainer(NNTrainer *trainer, NNNetwork *network,
     trainer->layer_deltas[i + 1] = trainer->layer_deltas[i] + l.output_length;
   }
 
+  trainer->steps = 0;
+  trainer->p = 1;
+  trainer->p2 = 1;
   trainer->loss_type = NN_MSE_LOSS;
   trainer->optimizer_type = optimizer_type;
 
@@ -1016,9 +1081,10 @@ void apply_slopes(NNTrainer *trainer, NNtype learning_rate,
   assert(batch_length);
   assert(isfinite(learning_rate) && learning_rate != 0);
 
-  learning_rate /= (NNtype)batch_length;
+  trainer->steps++;
 
-  optimizer_functions[trainer->optimizer_type](trainer, learning_rate);
+  optimizer_functions[trainer->optimizer_type](trainer, learning_rate,
+                                               batch_length);
 }
 
 // Calculates and applies a single training step for a batch of inputs.
@@ -1459,11 +1525,12 @@ void test_network() {
   }
 }
 
-void compare_numeric_backprop_slopes(NNNetwork *network, NNLossType loss_type) {
+void compare_numeric_backprop_slopes(NNNetwork *network, NNLossType loss_type,
+                                     NNOptimizerType optimizer_type) {
   NNTrainer numeric_trainer = {0};
-  init_trainer(&numeric_trainer, network, NN_MOMENTUM_OPTIMIZER);
+  init_trainer(&numeric_trainer, network, optimizer_type);
   NNTrainer trainer = {0};
-  init_trainer(&trainer, network, NN_MOMENTUM_OPTIMIZER);
+  init_trainer(&trainer, network, optimizer_type);
 
   numeric_trainer.loss_type = loss_type;
   trainer.loss_type = loss_type;
@@ -1480,6 +1547,11 @@ void compare_numeric_backprop_slopes(NNNetwork *network, NNLossType loss_type) {
     // so we do it here instead
     CHECK_FLOAT_TOL(trainer.slopes[slope_idx] / 4,
                     numeric_trainer.slopes[slope_idx], 0.003f, 1e-2f);
+  }
+
+  for (unsigned output_idx = 0; output_idx < network->final_output_length;
+       output_idx++) {
+    CHECK_BOOL(isfinite(network->final_output[output_idx]), true);
   }
 
   free_trainer(&trainer);
@@ -1549,7 +1621,8 @@ void test_trainer() {
     free_network(&network);
     free_trainer(&trainer);
   }
-  TEST_BLOCK("random activation, init and loss functions in trainer") {
+  TEST_BLOCK(
+      "random activation, init, loss, and optimizer functions in trainer") {
     NNNetwork network = {0};
     init_network(&network, 4, (unsigned[]){2, 2, 2, 2});
 
@@ -1559,36 +1632,41 @@ void test_trainer() {
            activation_type < NN_ACTIVATION_COUNT__; activation_type++) {
         for (NNLossType loss_type = NN_MSE_LOSS; loss_type < NN_LOSS_COUNT__;
              loss_type++) {
-          TEST_STEP("activation = %s init = %s loss = %s",
-                    activation_function_name(activation_type),
-                    init_function_name(init_type),
-                    loss_function_name(loss_type)) {
+          for (NNOptimizerType optimizer_type = NN_SDG_OPTIMIZER;
+               optimizer_type < NN_OPTIMIZER_COUNT__; optimizer_type++) {
+            TEST_STEP("activation = %s init = %s loss = %s optimizer = %s",
+                      activation_function_name(activation_type),
+                      init_function_name(init_type),
+                      loss_function_name(loss_type),
+                      optimizer_function_name(optimizer_type)) {
 
-            for (unsigned layer_idx = 0; layer_idx < network.layers_length;
-                 layer_idx++) {
-              network.layers[layer_idx].init_type = init_type;
-              network.layers[layer_idx].activation_type = activation_type;
-            }
-
-            pcg32_random_t rng;
-            pcg32_srandom_r(&rng, 0, 0);
-
-            init_network_weights(&network, &rng);
-
-            // initializing the biases seperately is required because he init
-            // zeros them out which causes the numeric approach to give
-            // different results with a (0,0) input.
-            for (unsigned layer_idx = 0; layer_idx < network.layers_length;
-                 layer_idx++) {
-              for (unsigned bias_idx = 0;
-                   bias_idx < network.layers[layer_idx].output_length;
-                   bias_idx++) {
-                network.layers[layer_idx].biases[bias_idx] =
-                    pcg32_float_range(&rng, 0.01f, 0.1f);
+              for (unsigned layer_idx = 0; layer_idx < network.layers_length;
+                   layer_idx++) {
+                network.layers[layer_idx].init_type = init_type;
+                network.layers[layer_idx].activation_type = activation_type;
               }
-            }
 
-            compare_numeric_backprop_slopes(&network, loss_type);
+              pcg32_random_t rng;
+              pcg32_srandom_r(&rng, 0, 0);
+
+              init_network_weights(&network, &rng);
+
+              // initializing the biases seperately is required because he init
+              // zeros them out which causes the numeric approach to give
+              // different results with a (0,0) input.
+              for (unsigned layer_idx = 0; layer_idx < network.layers_length;
+                   layer_idx++) {
+                for (unsigned bias_idx = 0;
+                     bias_idx < network.layers[layer_idx].output_length;
+                     bias_idx++) {
+                  network.layers[layer_idx].biases[bias_idx] =
+                      pcg32_float_range(&rng, 0.01f, 0.1f);
+                }
+              }
+
+              compare_numeric_backprop_slopes(&network, loss_type,
+                                              optimizer_type);
+            }
           }
         }
       }
@@ -1733,8 +1811,8 @@ void bench_and_print() {
   unsigned network_layers[] = {input_length, 32, 32, expected_length};
   init_network(&network, ARR_LENGTH(network_layers), network_layers);
   NNTrainer trainer = {0};
-  init_trainer(&trainer, &network, NN_MOMENTUM_OPTIMIZER);
-  trainer.learning_rate = 9e-4f;
+  init_trainer(&trainer, &network, NN_ADAM_OPTIMIZER);
+  trainer.learning_rate = 1e-4f;
 
   init_network_weights(&network, &rng);
 
