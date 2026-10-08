@@ -227,7 +227,7 @@ static char *activation_function_name(NNActivationType activation_type) {
     return "tanh";
   }
 }
-const struct {
+static const struct {
   NNactivation activation;
   NNactivation derivative;
 } activation_functions[] = {
@@ -299,7 +299,7 @@ static char *init_function_name(NNInitType init_type) {
   }
 }
 
-const NNInitLayer init_functions[] = {
+static const NNInitLayer init_functions[] = {
     [NN_NO_INIT] = noop_init,
     [NN_UNIFORM_INIT] = uniform_init,
     [NN_HE_INIT] = he_init,
@@ -411,7 +411,7 @@ static char *loss_function_name(NNLossType loss_type) {
   }
 }
 
-const struct {
+static const struct {
   NNComputeLoss loss;
   NNComputeLossDerivative derivative;
 } loss_functions[] = {
@@ -486,7 +486,7 @@ void momentum_optimizer(NNTrainer *trainer, NNtype learning_rate) {
   }
 }
 
-const NNOptimizer optimizer_functions[] = {
+static const NNOptimizer optimizer_functions[] = {
     [NN_SDG_OPTIMIZER] = SDG_optimizer,
     [NN_MOMENTUM_OPTIMIZER] = momentum_optimizer,
 };
