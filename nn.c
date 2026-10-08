@@ -188,7 +188,7 @@ static inline uint32_t pcg32_bounded_rand(pcg32_random_t *rng, uint32_t range) {
 // Generates a number between [min, max)
 static inline uint32_t pcg32_int_range(pcg32_random_t *rng, uint32_t min,
                                        uint32_t max) {
-  return pcg32_bounded_rand(rng, max + min) + min;
+  return pcg32_bounded_rand(rng, max - min) + min;
 }
 
 static inline void pcg32_shuffle_index_array(pcg32_random_t *rng,
