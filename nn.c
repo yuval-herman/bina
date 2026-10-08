@@ -1415,8 +1415,6 @@ void test_layer() {
           NNNetwork network = {0};
           init_network(&network, 2, (unsigned[]){input_size, output_size});
           NNLayer layer = network.layers[0];
-          layer.activation_type = NN_RELU_ACTIVATION;
-          layer.init_type = NN_HE_INIT;
 
           pcg32_random_t rng;
           pcg32_srandom_r(&rng, 0, 0);
