@@ -518,18 +518,19 @@ void adam_optimizer(NNTrainer *trainer, NNtype learning_rate,
   assert(network && "trainer must be initialised before training");
 
 #define apply_slope(param, momentum, velocity)                                 \
-  (param -= learning_rate * (momentum / (1 - trainer->p)) /                    \
-            (sqrtf(velocity / (1 - trainer->p2)) + 1e-8f))
+  (param -=                                                                    \
+   learning_rate * ((momentum / p_div) / (sqrtf(velocity / p2_div)) + 1e-8f))
 #define update_velocities(momentum, velocity, slope)                           \
   do {                                                                         \
-    momentum = trainer->momentum_damp * momentum +                             \
-               (1 - trainer->momentum_damp) * slope;                           \
+    momentum = trainer->momentum_damp * (momentum - slope) + slope;            \
     velocity = trainer->adam_damp * velocity +                                 \
                (1 - trainer->adam_damp) * slope * slope;                       \
   } while (0)
 
   trainer->p *= trainer->momentum_damp;
+  const NNtype p_div = 1 - trainer->p;
   trainer->p2 *= trainer->adam_damp;
+  const NNtype p2_div = 1 - trainer->p2;
 
   for (unsigned layer_idx = 0; layer_idx < network->layers_length;
        layer_idx++) {
