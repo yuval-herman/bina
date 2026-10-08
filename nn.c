@@ -1735,6 +1735,86 @@ void test_trainer() {
     free_trainer(&numeric_trainer);
     free_trainer(&trainer);
   }
+  {
+    NNNetwork network = {0};
+    init_network(&network, 3, (unsigned[]){1, 1, 1});
+    NNTrainer trainer = {0};
+    init_trainer(&trainer, &network, NN_ADAM_OPTIMIZER);
+
+#define INIT_PARAMS()                                                          \
+  for (unsigned layer_idx = 0; layer_idx < network.layers_length;              \
+       layer_idx++) {                                                          \
+    NNLayer layer = network.layers[layer_idx];                                 \
+    for (unsigned weight_idx = 0;                                              \
+         weight_idx < layer.output_length * layer.input_length;                \
+         weight_idx++) {                                                       \
+      layer.weights[weight_idx] = 1;                                           \
+    }                                                                          \
+    for (unsigned bias_idx = 0; bias_idx < layer.output_length; bias_idx++) {  \
+      layer.biases[bias_idx] = 0;                                              \
+    }                                                                          \
+  }                                                                            \
+  for (unsigned velocity_idx = 0; velocity_idx < trainer.velocities_length;    \
+       velocity_idx++) {                                                       \
+    trainer.velocities[velocity_idx] = 0.0f;                                   \
+  }                                                                            \
+  trainer.p = 1.0f;                                                            \
+  trainer.p2 = 1.0f;
+
+    TEST_STEP("same slope every step (0.5f)") {
+      INIT_PARAMS();
+      for (unsigned slope_idx = 0; slope_idx < trainer.slopes_length;
+           slope_idx++) {
+        trainer.slopes[slope_idx] = 0.5f;
+      }
+
+      adam_optimizer(&trainer, 0.01f, 1);
+      CHECK_FLOAT(network.layers[0].weights[0], 0.99f);
+      adam_optimizer(&trainer, 0.01f, 1);
+      CHECK_FLOAT(network.layers[0].weights[0], 0.98f);
+      adam_optimizer(&trainer, 0.01f, 1);
+      CHECK_FLOAT(network.layers[0].weights[0], 0.97f);
+    }
+
+    TEST_STEP("slope 0, twice") {
+      INIT_PARAMS();
+      for (unsigned slope_idx = 0; slope_idx < trainer.slopes_length;
+           slope_idx++) {
+        trainer.slopes[slope_idx] = 0.0f;
+      }
+      for (unsigned velocity_idx = 0; velocity_idx < trainer.velocities_length;
+           velocity_idx++) {
+        trainer.velocities[velocity_idx] = 0.0f;
+      }
+
+      adam_optimizer(&trainer, 0.01f, 1);
+      CHECK_FLOAT(network.layers[0].weights[0], 1.0f);
+      adam_optimizer(&trainer, 0.01f, 1);
+      CHECK_FLOAT(network.layers[0].weights[0], 1.0f);
+    }
+
+    TEST_STEP("slope 1, then 0") {
+      INIT_PARAMS();
+      for (unsigned slope_idx = 0; slope_idx < trainer.slopes_length;
+           slope_idx++) {
+        trainer.slopes[slope_idx] = 1.0f;
+      }
+
+      adam_optimizer(&trainer, 0.01f, 1);
+      CHECK_FLOAT(network.layers[0].weights[0], 0.99f);
+
+      for (unsigned slope_idx = 0; slope_idx < trainer.slopes_length;
+           slope_idx++) {
+        trainer.slopes[slope_idx] = 0.0f;
+      }
+
+      adam_optimizer(&trainer, 0.01f, 1);
+      CHECK_FLOAT(network.layers[0].weights[0], 0.98329942f);
+    }
+    free_network(&network);
+    free_trainer(&trainer);
+#undef INIT_PARAMS
+  }
 }
 
 void test_loss() {
