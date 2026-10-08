@@ -519,7 +519,7 @@ void adam_optimizer(NNTrainer *trainer, NNtype learning_rate,
 
 #define apply_slope(param, momentum, velocity)                                 \
   (param -=                                                                    \
-   learning_rate * ((momentum / p_div) / (sqrtf(velocity / p2_div)) + 1e-8f))
+   learning_rate * (momentum / (p_div * sqrtf(velocity / p2_div) + 1e-8f)))
 #define update_velocities(momentum, velocity, slope)                           \
   do {                                                                         \
     momentum = trainer->momentum_damp * (momentum - slope) + slope;            \
@@ -1770,8 +1770,7 @@ void test_loss() {
 }
 
 bool test_summary() {
-  if (test_count > test_checks_passing ||
-      test_check_count > test_checks_passing) {
+  if (test_check_count > test_checks_passing) {
     const unsigned failing_tests = test_count - test_passing;
     printf("\n\nran %u tests, with %u (%.3g%%) failing.\n", test_count,
            failing_tests, ((double)failing_tests / test_count) * 100);
