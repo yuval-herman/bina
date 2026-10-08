@@ -296,6 +296,8 @@ static char *init_function_name(NNInitType init_type) {
     assert(!"impossible init type");
     return "impossible init type";
 
+  case NN_NO_INIT:
+    return "no init";
   case NN_UNIFORM_INIT:
     return "uniform";
   case NN_HE_INIT:
