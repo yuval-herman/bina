@@ -438,15 +438,16 @@ void SDG_optimizer(NNTrainer *trainer, NNtype learning_rate) {
     const NNLayer layer = network->layers[layer_idx];
     const unsigned weights_length = layer.input_length * layer.output_length;
 
+#define apply_slope(param, slope) (param -= slope * learning_rate)
     for (unsigned weight_idx = 0; weight_idx < weights_length; weight_idx++) {
-      layer.weights[weight_idx] -=
-          trainer->layer_slopes[layer_idx][weight_idx] * learning_rate;
+      apply_slope(layer.weights[weight_idx],
+                  trainer->layer_slopes[layer_idx][weight_idx]);
     }
     for (unsigned bias_idx = 0; bias_idx < layer.output_length; bias_idx++) {
-      layer.biases[bias_idx] -=
-          trainer->layer_slopes[layer_idx][weights_length + bias_idx] *
-          learning_rate;
+      apply_slope(layer.biases[bias_idx],
+                  trainer->layer_slopes[layer_idx][weights_length + bias_idx]);
     }
+#undef apply_slope
   }
 }
 
@@ -456,12 +457,9 @@ void momentum_optimizer(NNTrainer *trainer, NNtype learning_rate) {
   NNNetwork *network = trainer->network;
   assert(network && "trainer must be initialised before training");
 
-  for (unsigned slope_idx = 0; slope_idx < trainer->slopes_length;
-       slope_idx++) {
-    trainer->velocities[slope_idx] =
-        trainer->momentum_keep * trainer->velocities[slope_idx] +
-        trainer->slopes[slope_idx];
-  }
+#define apply_slope(param, slope) (param -= slope * learning_rate)
+#define update_velocity(velocity, slope)                                       \
+  (velocity = trainer->momentum_damp * velocity + slope)
 
   for (unsigned layer_idx = 0; layer_idx < network->layers_length;
        layer_idx++) {
@@ -472,14 +470,53 @@ void momentum_optimizer(NNTrainer *trainer, NNtype learning_rate) {
       const unsigned velocity_idx =
           (unsigned)(&trainer->layer_slopes[layer_idx][weight_idx] -
                      trainer->slopes);
-      layer.weights[weight_idx] -=
-          trainer->velocities[velocity_idx] * learning_rate;
+      update_velocity(trainer->velocities[velocity_idx],
+                      trainer->layer_slopes[layer_idx][weight_idx]);
+
+      apply_slope(layer.weights[weight_idx], trainer->velocities[velocity_idx]);
     }
+
     for (unsigned bias_idx = 0; bias_idx < layer.output_length; bias_idx++) {
       const unsigned velocity_idx =
           (unsigned)(&trainer
                           ->layer_slopes[layer_idx][weights_length + bias_idx] -
                      trainer->slopes);
+      update_velocity(
+          trainer->velocities[velocity_idx],
+          trainer->layer_slopes[layer_idx][weights_length + bias_idx]);
+
+      apply_slope(layer.biases[bias_idx], trainer->velocities[velocity_idx]);
+    }
+  }
+#undef apply_slope
+#undef update_velocity
+}
+  for (unsigned layer_idx = 0; layer_idx < network->layers_length;
+       layer_idx++) {
+    const NNLayer layer = network->layers[layer_idx];
+    const unsigned weights_length = layer.input_length * layer.output_length;
+
+    for (unsigned weight_idx = 0; weight_idx < weights_length; weight_idx++) {
+      const unsigned velocity_idx =
+          (unsigned)(&trainer->layer_slopes[layer_idx][weight_idx] -
+                     trainer->slopes);
+      trainer->velocities[velocity_idx] =
+          trainer->momentum_damp * trainer->velocities[velocity_idx] +
+          layer.weights[weight_idx];
+
+      layer.weights[weight_idx] -=
+          trainer->velocities[velocity_idx] * learning_rate;
+    }
+
+    for (unsigned bias_idx = 0; bias_idx < layer.output_length; bias_idx++) {
+      const unsigned velocity_idx =
+          (unsigned)(&trainer
+                          ->layer_slopes[layer_idx][weights_length + bias_idx] -
+                     trainer->slopes);
+      trainer->velocities[velocity_idx] =
+          trainer->momentum_damp * trainer->velocities[velocity_idx] +
+          layer.weights[bias_idx];
+
       layer.biases[bias_idx] -=
           trainer->velocities[velocity_idx] * learning_rate;
     }
