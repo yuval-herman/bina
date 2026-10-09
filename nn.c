@@ -918,16 +918,16 @@ void feed_network(NNNetwork *network, const NNtype *inputs) {
 // `inputs` and `expected` are both 2d arrays that are expected to be in
 // contiguous memory.
 NNtype calculate_batch_network_loss(NNNetwork *network, NNLossType loss_type,
-                                    unsigned batch_size, const NNtype *inputs,
+                                    unsigned example_count, const NNtype *inputs,
                                     const NNtype *expected) {
   double avg_loss = 0;
-  for (unsigned i = 0; i < batch_size; i++) {
+  for (unsigned i = 0; i < example_count; i++) {
     feed_network(network, &inputs[i * network->layers[0].input_length]);
     avg_loss += (double)loss_functions[loss_type].loss(
         network->final_output_length, network->final_output,
         &expected[i * network->final_output_length]);
   }
-  return (NNtype)avg_loss / (NNtype)batch_size;
+  return (NNtype)avg_loss / (NNtype)example_count;
 }
 
 // `inputs` and `expected` are both 2d arrays that are expected to be in
@@ -1174,10 +1174,12 @@ void train_epoch(NNTrainer *trainer, pcg32_random_t *rng,
 
   pcg32_shuffle_index_array(rng, indices_length, indices);
 
+  const unsigned batch_size = indices_length / batchs_count;
+
   // We skip leftover examples if there are any
   for (unsigned batch_idx = 0; batch_idx < batchs_count; batch_idx++) {
-    train_step(trainer, batchs_count, indices + batchs_count * batch_idx,
-               inputs, expected);
+    train_step(trainer, batch_size, indices + batch_size * batch_idx, inputs,
+               expected);
   }
 }
 
@@ -1933,7 +1935,7 @@ bool test_summary() {
 
 void bench_and_print() {
 // count of all batches
-#define BATCHS_COUNT 10
+#define BATCHS_COUNT 5
 // length of a single batch
 #define BATCH_SIZE 10
 // length of a single input
@@ -1986,8 +1988,8 @@ void bench_and_print() {
 
   for (unsigned run = 0; warmup_runs || run < runs;) {
     uint64_t train_step_time = get_time();
-    train_epoch(&trainer, &rng, BATCHS_COUNT * BATCH_SIZE, indices,
-                BATCH_SIZE, &inputs[0][0], &expected[0][0]);
+    train_epoch(&trainer, &rng, BATCHS_COUNT * BATCH_SIZE, indices, BATCH_SIZE,
+                &inputs[0][0], &expected[0][0]);
     train_step_time = get_time() - train_step_time;
 
     uint64_t feed_net_time = get_time();
