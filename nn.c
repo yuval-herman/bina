@@ -917,7 +917,7 @@ void feed_network(NNNetwork *network, const NNtype *inputs) {
 
 // `inputs` and `expected` are both 2d arrays that are expected to be in
 // contiguous memory.
-NNtype calculate_batch_network_loss(NNNetwork *network, NNLossType loss_type,
+NNtype calculate_network_loss(NNNetwork *network, NNLossType loss_type,
                                     unsigned example_count, const NNtype *inputs,
                                     const NNtype *expected) {
   double avg_loss = 0;
@@ -942,7 +942,7 @@ void calculate_batch_slope_numeric(NNTrainer *trainer, unsigned batch_size,
   assert(network && "trainer must be initialised before training");
   const NNtype nudge_value = 1e-4f;
 
-  double avg_loss_before = calculate_batch_network_loss(
+  double avg_loss_before = calculate_network_loss(
       network, trainer->loss_type, batch_size, inputs, expected);
 
   for (unsigned layer_idx = 0; layer_idx < network->layers_length;
@@ -954,7 +954,7 @@ void calculate_batch_slope_numeric(NNTrainer *trainer, unsigned batch_size,
       NNtype previous_nn_value = layer.weights[weight_idx];
       layer.weights[weight_idx] += nudge_value;
 
-      double avg_loss_after = calculate_batch_network_loss(
+      double avg_loss_after = calculate_network_loss(
           network, trainer->loss_type, batch_size, inputs, expected);
 
       trainer->layer_slopes[layer_idx][weight_idx] =
@@ -966,7 +966,7 @@ void calculate_batch_slope_numeric(NNTrainer *trainer, unsigned batch_size,
       NNtype previous_nn_value = layer.biases[bias_idx];
       layer.biases[bias_idx] += nudge_value;
 
-      double avg_loss_after = calculate_batch_network_loss(
+      double avg_loss_after = calculate_network_loss(
           network, trainer->loss_type, batch_size, inputs, expected);
 
       trainer->layer_slopes[layer_idx][weights_length + bias_idx] =
@@ -1776,7 +1776,7 @@ void test_trainer() {
     NNtype xor_expected[4][1] = {{0}, {1}, {1}, {0}};
 
     NNtype prev_batch_loss =
-        calculate_batch_network_loss(trainer.network, trainer.loss_type, 4,
+        calculate_network_loss(trainer.network, trainer.loss_type, 4,
                                      &xor_inputs[0][0], &xor_expected[0][0]);
 
     for (unsigned i = 0; i < 10; i++) {
@@ -1792,7 +1792,7 @@ void test_trainer() {
       }
 
       NNtype batch_loss =
-          calculate_batch_network_loss(trainer.network, trainer.loss_type, 4,
+          calculate_network_loss(trainer.network, trainer.loss_type, 4,
                                        &xor_inputs[0][0], &xor_expected[0][0]);
 
       CHECK_BOOL(batch_loss < prev_batch_loss, true);
@@ -2019,7 +2019,7 @@ void bench_and_print() {
   printf("feed_net => min: %lu avg %g\n", feed_net_min_time,
          feed_net_average_time);
   printf("end loss => %g\n",
-         (double)calculate_batch_network_loss(&network, trainer.loss_type,
+         (double)calculate_network_loss(&network, trainer.loss_type,
                                               BATCH_SIZE * BATCHS_COUNT,
                                               &inputs[0][0], &expected[0][0]));
 
