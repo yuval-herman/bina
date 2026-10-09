@@ -212,13 +212,13 @@ static inline NNtype *get_weight(NNLayer *layer, unsigned output_idx,
 }
 
 typedef void (*NNInitLayer)(NNLayer *layer, pcg32_random_t *rng, NNtype gain);
-typedef NNtype (*NNComputeLoss)(unsigned input_length, const NNtype *values,
+typedef NNtype (*NNComputeLoss)(unsigned values_length, const NNtype *values,
                                 const NNtype *expected);
 // Loss derivative functions overwrite the `values` array
-typedef void (*NNComputeLossDerivative)(unsigned input_length, NNtype *values,
+typedef void (*NNComputeLossDerivative)(unsigned values_length, NNtype *values,
                                         const NNtype *expected);
 typedef void (*NNOptimizer)(NNTrainer *trainer, NNtype learning_rate,
-                            unsigned batch_length);
+                            unsigned batch_size);
 
 static inline uint64_t get_time(void) {
   struct timespec ts;
@@ -357,73 +357,73 @@ static const NNInitLayer init_functions[] = {
 
 // `values` is modified in place. If you need the values unaltered pass a copy
 // here.
-static inline void softmax(unsigned inputs_length, NNtype *values) {
+static inline void softmax(unsigned values_length, NNtype *values) {
   NNtype max = -INFINITY;
-  for (unsigned i = 0; i < inputs_length; i++) {
+  for (unsigned i = 0; i < values_length; i++) {
     if (values[i] > max)
       max = values[i];
   }
 
-  for (unsigned i = 0; i < inputs_length; i++) {
+  for (unsigned i = 0; i < values_length; i++) {
     values[i] = expf(values[i] - max);
   }
 
   NNtype sum = 0;
-  for (unsigned i = 0; i < inputs_length; i++) {
+  for (unsigned i = 0; i < values_length; i++) {
     sum += values[i];
   }
 
-  for (unsigned i = 0; i < inputs_length; i++) {
+  for (unsigned i = 0; i < values_length; i++) {
     values[i] = values[i] / sum;
   }
 }
 
-static inline NNtype mse_loss(unsigned inputs_length, const NNtype *values,
+static inline NNtype mse_loss(unsigned values_length, const NNtype *values,
                               const NNtype *expected) {
-  assert(inputs_length);
+  assert(values_length);
   assert(values);
   assert(expected);
 
   NNtype loss = 0;
-  for (unsigned i = 0; i < inputs_length; i++) {
-    const NNtype input_loss = values[i] - expected[i];
-    loss += input_loss * input_loss;
+  for (unsigned i = 0; i < values_length; i++) {
+    const NNtype value_loss = values[i] - expected[i];
+    loss += value_loss * value_loss;
   }
 
-  return loss / (NNtype)inputs_length;
+  return loss / (NNtype)values_length;
 }
 
-static inline void mse_loss_derivative(unsigned inputs_length, NNtype *values,
+static inline void mse_loss_derivative(unsigned values_length, NNtype *values,
                                        const NNtype *expected) {
-  assert(inputs_length);
+  assert(values_length);
   assert(values);
   assert(expected);
 
-  for (unsigned i = 0; i < inputs_length; i++) {
-    values[i] = (values[i] - expected[i]) * 2 / (NNtype)inputs_length;
+  for (unsigned i = 0; i < values_length; i++) {
+    values[i] = (values[i] - expected[i]) * 2 / (NNtype)values_length;
   }
 }
 
-static inline NNtype cross_entropy_loss(unsigned inputs_length,
+static inline NNtype cross_entropy_loss(unsigned values_length,
                                         const NNtype *values,
                                         const NNtype *expected) {
-  assert(inputs_length);
+  assert(values_length);
   assert(values);
   assert(expected);
 
   // combine results with softmax
   NNtype max = -INFINITY;
-  for (unsigned i = 0; i < inputs_length; i++) {
+  for (unsigned i = 0; i < values_length; i++) {
     if (values[i] > max)
       max = values[i];
   }
 
   NNtype sum = 0;
-  for (unsigned i = 0; i < inputs_length; i++) {
+  for (unsigned i = 0; i < values_length; i++) {
     sum += expf(values[i] - max);
   }
 
-  for (unsigned i = 0; i < inputs_length; i++) {
+  for (unsigned i = 0; i < values_length; i++) {
     if (expected[i] == 1) {
       return -(values[i] - max) + logf(sum);
     }
@@ -433,16 +433,16 @@ static inline NNtype cross_entropy_loss(unsigned inputs_length,
   return NAN;
 }
 
-static inline void cross_entropy_loss_derivative(unsigned inputs_length,
+static inline void cross_entropy_loss_derivative(unsigned values_length,
                                                  NNtype *values,
                                                  const NNtype *expected) {
-  assert(inputs_length);
+  assert(values_length);
   assert(values);
   assert(expected);
 
-  softmax(inputs_length, values);
+  softmax(values_length, values);
 
-  for (unsigned i = 0; i < inputs_length; i++) {
+  for (unsigned i = 0; i < values_length; i++) {
     values[i] = values[i] - expected[i];
   }
 }
@@ -477,14 +477,14 @@ static const struct {
 };
 
 void SDG_optimizer(NNTrainer *trainer, NNtype learning_rate,
-                   unsigned batch_length) {
-  assert(batch_length);
+                   unsigned batch_size) {
+  assert(batch_size);
   assert(trainer);
   assert(isfinite(learning_rate) && learning_rate != 0);
   NNNetwork *network = trainer->network;
   assert(network && "trainer must be initialised before training");
 
-  learning_rate /= (NNtype)batch_length;
+  learning_rate /= (NNtype)batch_size;
 
   for (unsigned layer_idx = 0; layer_idx < network->layers_length;
        layer_idx++) {
@@ -505,14 +505,14 @@ void SDG_optimizer(NNTrainer *trainer, NNtype learning_rate,
 }
 
 void momentum_optimizer(NNTrainer *trainer, NNtype learning_rate,
-                        unsigned batch_length) {
-  assert(batch_length);
+                        unsigned batch_size) {
+  assert(batch_size);
   assert(trainer);
   assert(isfinite(learning_rate) && learning_rate != 0);
   NNNetwork *network = trainer->network;
   assert(network && "trainer must be initialised before training");
 
-  learning_rate /= (NNtype)batch_length;
+  learning_rate /= (NNtype)batch_size;
 
 #define apply_slope(param, slope) (param -= slope * learning_rate)
 #define update_momentum(momentum, slope)                                       \
@@ -550,8 +550,8 @@ void momentum_optimizer(NNTrainer *trainer, NNtype learning_rate,
 }
 
 void adam_optimizer(NNTrainer *trainer, NNtype learning_rate,
-                    unsigned batch_length) {
-  (void)batch_length;
+                    unsigned batch_size) {
+  (void)batch_size;
 
   assert(trainer);
   assert(isfinite(learning_rate) && learning_rate != 0);
@@ -918,25 +918,24 @@ void feed_network(NNNetwork *network, const NNtype *inputs) {
 // `inputs` and `expected` are both 2d arrays that are expected to be in
 // contiguous memory.
 NNtype calculate_batch_network_loss(NNNetwork *network, NNLossType loss_type,
-                                    unsigned inputs_length,
-                                    const NNtype *inputs,
+                                    unsigned batch_size, const NNtype *inputs,
                                     const NNtype *expected) {
   double avg_loss = 0;
-  for (unsigned i = 0; i < inputs_length; i++) {
+  for (unsigned i = 0; i < batch_size; i++) {
     feed_network(network, &inputs[i * network->layers[0].input_length]);
     avg_loss += (double)loss_functions[loss_type].loss(
         network->final_output_length, network->final_output,
         &expected[i * network->final_output_length]);
   }
-  return (NNtype)avg_loss / (NNtype)inputs_length;
+  return (NNtype)avg_loss / (NNtype)batch_size;
 }
 
 // `inputs` and `expected` are both 2d arrays that are expected to be in
 // contiguous memory.
-void calculate_batch_slope_numeric(NNTrainer *trainer, unsigned inputs_length,
+void calculate_batch_slope_numeric(NNTrainer *trainer, unsigned batch_size,
                                    const NNtype *inputs,
                                    const NNtype *expected) {
-  assert(inputs_length && inputs);
+  assert(batch_size && inputs);
   assert(expected);
   assert(trainer);
   NNNetwork *network = trainer->network;
@@ -944,7 +943,7 @@ void calculate_batch_slope_numeric(NNTrainer *trainer, unsigned inputs_length,
   const NNtype nudge_value = 1e-4f;
 
   double avg_loss_before = calculate_batch_network_loss(
-      network, trainer->loss_type, inputs_length, inputs, expected);
+      network, trainer->loss_type, batch_size, inputs, expected);
 
   for (unsigned layer_idx = 0; layer_idx < network->layers_length;
        layer_idx++) {
@@ -956,7 +955,7 @@ void calculate_batch_slope_numeric(NNTrainer *trainer, unsigned inputs_length,
       layer.weights[weight_idx] += nudge_value;
 
       double avg_loss_after = calculate_batch_network_loss(
-          network, trainer->loss_type, inputs_length, inputs, expected);
+          network, trainer->loss_type, batch_size, inputs, expected);
 
       trainer->layer_slopes[layer_idx][weight_idx] =
           (NNtype)(avg_loss_after - avg_loss_before) / nudge_value;
@@ -968,7 +967,7 @@ void calculate_batch_slope_numeric(NNTrainer *trainer, unsigned inputs_length,
       layer.biases[bias_idx] += nudge_value;
 
       double avg_loss_after = calculate_batch_network_loss(
-          network, trainer->loss_type, inputs_length, inputs, expected);
+          network, trainer->loss_type, batch_size, inputs, expected);
 
       trainer->layer_slopes[layer_idx][weights_length + bias_idx] =
           (NNtype)(avg_loss_after - avg_loss_before) / nudge_value;
@@ -1120,24 +1119,24 @@ void calculate_network_slopes(NNTrainer *trainer, const NNtype *input) {
 }
 
 void apply_slopes(NNTrainer *trainer, NNtype learning_rate,
-                  unsigned batch_length) {
+                  unsigned batch_size) {
   assert(trainer);
-  assert(batch_length);
+  assert(batch_size);
   assert(isfinite(learning_rate) && learning_rate != 0);
 
   trainer->steps++;
 
   optimizer_functions[trainer->optimizer_type](trainer, learning_rate,
-                                               batch_length);
+                                               batch_size);
 }
 
 // Calculates and applies a single training step for a batch of inputs.
 // `inputs` and `expected` are both 2d arrays that are expected to be in
 // contiguous memory.
-void train_step(NNTrainer *trainer, unsigned batch_length,
+void train_step(NNTrainer *trainer, unsigned batch_size,
                 unsigned *batch_indices, const NNtype *inputs,
                 const NNtype *expected) {
-  assert(batch_length && inputs);
+  assert(batch_size && inputs);
   assert(expected);
   assert(trainer);
   NNNetwork *network = trainer->network;
@@ -1145,7 +1144,7 @@ void train_step(NNTrainer *trainer, unsigned batch_length,
 
   memset(trainer->slopes, 0, trainer->slopes_length * sizeof(NNtype));
 
-  for (unsigned input_batch_idx = 0; input_batch_idx < batch_length;
+  for (unsigned input_batch_idx = 0; input_batch_idx < batch_size;
        input_batch_idx++) {
     const NNtype *input_batch = inputs + network->layers[0].input_length *
                                              batch_indices[input_batch_idx];
@@ -1159,16 +1158,16 @@ void train_step(NNTrainer *trainer, unsigned batch_length,
     calculate_network_slopes(trainer, input_batch);
   }
 
-  apply_slopes(trainer, trainer->learning_rate, batch_length);
+  apply_slopes(trainer, trainer->learning_rate, batch_size);
 }
 
 void train_epoch(NNTrainer *trainer, pcg32_random_t *rng,
                  unsigned indices_length, unsigned *indices,
-                 unsigned batch_length, const NNtype *inputs,
+                 unsigned batchs_count, const NNtype *inputs,
                  const NNtype *expected) {
   assert(rng);
   assert(indices);
-  assert(batch_length);
+  assert(batchs_count);
   assert(inputs);
   assert(expected);
   assert(trainer);
@@ -1176,8 +1175,8 @@ void train_epoch(NNTrainer *trainer, pcg32_random_t *rng,
   pcg32_shuffle_index_array(rng, indices_length, indices);
 
   // We skip leftover examples if there are any
-  for (unsigned batch_idx = 0; batch_idx < batch_length; batch_idx++) {
-    train_step(trainer, batch_length, indices + batch_length * batch_idx,
+  for (unsigned batch_idx = 0; batch_idx < batchs_count; batch_idx++) {
+    train_step(trainer, batchs_count, indices + batchs_count * batch_idx,
                inputs, expected);
   }
 }
@@ -1936,16 +1935,16 @@ void bench_and_print() {
 // count of all batches
 #define BATCHS_COUNT 10
 // length of a single batch
-#define BATCH_LENGTH 10
+#define BATCH_SIZE 10
 // length of a single input
 #define INPUT_LENGTH 32
 #define EXPECTED_LENGTH 10
 
-  NNtype inputs[BATCHS_COUNT * BATCH_LENGTH][INPUT_LENGTH];
-  NNtype expected[BATCHS_COUNT * BATCH_LENGTH][EXPECTED_LENGTH];
-  unsigned indices[BATCHS_COUNT * BATCH_LENGTH];
+  NNtype inputs[BATCHS_COUNT * BATCH_SIZE][INPUT_LENGTH];
+  NNtype expected[BATCHS_COUNT * BATCH_SIZE][EXPECTED_LENGTH];
+  unsigned indices[BATCHS_COUNT * BATCH_SIZE];
 
-  for (unsigned i = 0; i < BATCHS_COUNT * BATCH_LENGTH; i++) {
+  for (unsigned i = 0; i < BATCHS_COUNT * BATCH_SIZE; i++) {
     indices[i] = i;
   }
 
@@ -1953,7 +1952,7 @@ void bench_and_print() {
   pcg32_srandom_r(&rng, 0, 0);
 
   for (unsigned batch_idx = 0; batch_idx < BATCHS_COUNT; batch_idx++) {
-    for (unsigned input_batch_idx = 0; input_batch_idx < BATCH_LENGTH;
+    for (unsigned input_batch_idx = 0; input_batch_idx < BATCH_SIZE;
          input_batch_idx++) {
       for (unsigned input_idx = 0; input_idx < INPUT_LENGTH; input_idx++) {
         inputs[batch_idx * input_batch_idx][input_idx] =
@@ -1987,8 +1986,8 @@ void bench_and_print() {
 
   for (unsigned run = 0; warmup_runs || run < runs;) {
     uint64_t train_step_time = get_time();
-    train_epoch(&trainer, &rng, BATCHS_COUNT * BATCH_LENGTH, indices,
-                BATCH_LENGTH, &inputs[0][0], &expected[0][0]);
+    train_epoch(&trainer, &rng, BATCHS_COUNT * BATCH_SIZE, indices,
+                BATCH_SIZE, &inputs[0][0], &expected[0][0]);
     train_step_time = get_time() - train_step_time;
 
     uint64_t feed_net_time = get_time();
@@ -2019,12 +2018,12 @@ void bench_and_print() {
          feed_net_average_time);
   printf("end loss => %g\n",
          (double)calculate_batch_network_loss(&network, trainer.loss_type,
-                                              BATCH_LENGTH * BATCHS_COUNT,
+                                              BATCH_SIZE * BATCHS_COUNT,
                                               &inputs[0][0], &expected[0][0]));
 
   free_network(&network);
   free_trainer(&trainer);
-#undef BATCH_LENGTH
+#undef BATCH_SIZE
 #undef INPUT_LENGTH
 }
 
