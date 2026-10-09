@@ -1954,15 +1954,15 @@ void bench_and_print() {
   pcg32_srandom_r(&rng, 0, 0);
 
   for (unsigned batch_idx = 0; batch_idx < BATCHS_COUNT; batch_idx++) {
-    for (unsigned input_batch_idx = 0; input_batch_idx < BATCH_SIZE;
-         input_batch_idx++) {
+    for (unsigned example_idx = 0; example_idx < BATCH_SIZE;
+         example_idx++) {
       for (unsigned input_idx = 0; input_idx < INPUT_LENGTH; input_idx++) {
-        inputs[batch_idx * input_batch_idx][input_idx] =
+        inputs[batch_idx * BATCH_SIZE + example_idx][input_idx] =
             pcg32_float_range(&rng, -1, 1);
       }
       for (unsigned expected_idx = 0; expected_idx < EXPECTED_LENGTH;
            expected_idx++) {
-        expected[batch_idx * input_batch_idx][expected_idx] =
+        expected[batch_idx * BATCH_SIZE + example_idx][expected_idx] =
             pcg32_float_range(&rng, -1, 1);
       }
     }
