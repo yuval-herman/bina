@@ -15,7 +15,7 @@ common_flags=(
 
 build_debug() {
   gcc "${common_flags[@]}" \
-    -DNN_MAIN \
+    -DNN_TEST \
     -g -O0 \
     -fsanitize=address,undefined \
     -o nn nn.c -lm
@@ -23,7 +23,7 @@ build_debug() {
 
 build_production() {
   gcc "${common_flags[@]}" \
-    -DNN_MAIN \
+    -DNN_BENCH \
     -O3 -DNDEBUG \
     -o nn nn.c -lm
 }

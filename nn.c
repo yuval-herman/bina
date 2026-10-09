@@ -2076,9 +2076,9 @@ void test_helpers() {
   }
 }
 
-#ifdef NN_MAIN
+#if defined(NN_TEST) || defined(NN_BENCH)
 int main(void) {
-#ifndef NDEBUG
+#ifndef NN_TEST
   test_neuron();
   test_layer();
   test_network();
@@ -2087,7 +2087,8 @@ int main(void) {
   test_helpers();
   if (!test_summary())
     return 1;
-#else
+#endif
+#ifdef NN_BENCH
   bench_and_print();
 #endif
 }
