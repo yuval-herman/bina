@@ -29,6 +29,7 @@ typedef enum {
 
 typedef enum {
   NN_NO_INIT = 0,
+  NN_ZERO_INIT,
   NN_UNIFORM_INIT,
   NN_HE_INIT,
   NN_XAVIER_INIT,
@@ -294,6 +295,14 @@ static inline void noop_init(NNLayer *layer, pcg32_random_t *rng, NNtype gain) {
   (void)gain;
 }
 
+static inline void zero_init(NNLayer *layer, pcg32_random_t *rng, NNtype gain) {
+  (void)rng;
+  (void)gain;
+
+  memset(layer->weights, 0,
+         layer->input_length * layer->output_length + layer->output_length);
+}
+
 static inline void uniform_init(NNLayer *layer, pcg32_random_t *rng,
                                 NNtype gain) {
   for (unsigned weight_idx = 0;
@@ -339,6 +348,8 @@ static char *init_function_name(NNInitType init_type) {
 
   case NN_NO_INIT:
     return "no init";
+  case NN_ZERO_INIT:
+    return "zero init";
   case NN_UNIFORM_INIT:
     return "uniform";
   case NN_HE_INIT:
@@ -349,9 +360,8 @@ static char *init_function_name(NNInitType init_type) {
 }
 
 static const NNInitLayer init_functions[] = {
-    [NN_NO_INIT] = noop_init,
-    [NN_UNIFORM_INIT] = uniform_init,
-    [NN_HE_INIT] = he_init,
+    [NN_NO_INIT] = noop_init,         [NN_ZERO_INIT] = noop_init,
+    [NN_UNIFORM_INIT] = uniform_init, [NN_HE_INIT] = he_init,
     [NN_XAVIER_INIT] = xavier_init,
 };
 
