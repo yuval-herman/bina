@@ -300,7 +300,8 @@ static inline void zero_init(NNLayer *layer, pcg32_random_t *rng, NNtype gain) {
   (void)gain;
 
   memset(layer->weights, 0,
-         layer->input_length * layer->output_length + layer->output_length);
+         (layer->input_length * layer->output_length + layer->output_length) *
+             sizeof(NNtype));
 }
 
 static inline void uniform_init(NNLayer *layer, pcg32_random_t *rng,
@@ -360,7 +361,7 @@ static char *init_function_name(NNInitType init_type) {
 }
 
 static const NNInitLayer init_functions[] = {
-    [NN_NO_INIT] = noop_init,         [NN_ZERO_INIT] = noop_init,
+    [NN_NO_INIT] = noop_init,         [NN_ZERO_INIT] = zero_init,
     [NN_UNIFORM_INIT] = uniform_init, [NN_HE_INIT] = he_init,
     [NN_XAVIER_INIT] = xavier_init,
 };
