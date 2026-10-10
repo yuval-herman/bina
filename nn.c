@@ -2089,7 +2089,7 @@ void test_helpers() {
 
 #if defined(NN_TEST) || defined(NN_BENCH)
 int main(void) {
-#ifndef NN_TEST
+#ifdef NN_TEST
   test_neuron();
   test_layer();
   test_network();
