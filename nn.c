@@ -1896,6 +1896,32 @@ void test_trainer() {
     free_trainer(&trainer);
 #undef INIT_PARAMS
   }
+  TEST_BLOCK("test epoch") {
+    pcg32_random_t rng;
+    pcg32_srandom_r(&rng, 0, 0);
+
+    NNNetwork network = {0};
+    init_network(&network, 2, (unsigned[]){1, 1});
+    network.layers[0].activation_type = NN_NO_ACTIVATION;
+    network.layers[0].init_type = NN_ZERO_INIT;
+    init_network_weights(&network, &rng);
+
+    NNTrainer trainer = {0};
+    init_trainer(&trainer, &network, NN_SDG_OPTIMIZER);
+    trainer.loss_type = NN_MSE_LOSS;
+    trainer.learning_rate = 0.001f;
+
+    NNtype inputs[4][1] = {0};
+    NNtype expected[4][1] = {{1}, {2}, {4}, {8}};
+
+    unsigned indices[4] = {0, 1, 2, 3};
+
+    train_epoch(&trainer, &rng, 2, 2, indices, &inputs[0][0], &expected[0][0]);
+
+    CHECK_FLOAT_TOL(network.layers[0].biases[0], 0.015f, 1e-4f, 0);
+    free_network(&network);
+    free_trainer(&trainer);
+  }
 }
 
 void test_loss() {
