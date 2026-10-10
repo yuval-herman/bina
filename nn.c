@@ -1815,7 +1815,7 @@ void test_trainer() {
     free_trainer(&numeric_trainer);
     free_trainer(&trainer);
   }
-  {
+  TEST_BLOCK("adam optimizer") {
     NNNetwork network = {0};
     init_network(&network, 3, (unsigned[]){1, 1, 1});
     NNTrainer trainer = {0};
