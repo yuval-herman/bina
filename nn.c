@@ -86,6 +86,8 @@ typedef struct {
   NNtype **layer_slopes;
   // This array containes pointers to the start of each layer's delta values.
   NNtype **layer_deltas;
+  // This array containes pointers to the start of each layer's velocity values.
+  NNtype **layer_velocities;
   unsigned steps;
   NNLossType loss_type;
   NNOptimizerType optimizer_type;
@@ -571,7 +573,7 @@ void adam_optimizer(NNTrainer *trainer, NNtype learning_rate,
 
 #define apply_slope(param, momentum, velocity)                                 \
   (param -=                                                                    \
-   learning_rate * (momentum / (p_div * sqrtf(velocity / p2_div) + 1e-8f)))
+   learning_rate * (momentum / (p_div * sqrtf(velocity * p2_div) + 1e-8f)))
 #define update_velocities(momentum, velocity, slope)                           \
   do {                                                                         \
     momentum = trainer->momentum_damp * (momentum - slope) + slope;            \
@@ -582,38 +584,35 @@ void adam_optimizer(NNTrainer *trainer, NNtype learning_rate,
   trainer->p *= trainer->momentum_damp;
   const NNtype p_div = 1 - trainer->p;
   trainer->p2 *= trainer->adam_damp;
-  const NNtype p2_div = 1 - trainer->p2;
+  const NNtype p2_div = 1 / (1 - trainer->p2);
 
   for (unsigned layer_idx = 0; layer_idx < network->layers_length;
        layer_idx++) {
     const NNLayer layer = network->layers[layer_idx];
     const unsigned weights_length = layer.input_length * layer.output_length;
+    NNtype *const restrict layer_velocities = trainer->layer_velocities[layer_idx];
+    const NNtype *const restrict layer_slopes =
+        trainer->layer_slopes[layer_idx];
+    NNtype *const restrict layer_weights = layer.weights;
+    NNtype *const restrict layer_biases = layer.biases;
 
     for (unsigned weight_idx = 0; weight_idx < weights_length; weight_idx++) {
-      const unsigned velocity_idx =
-          (unsigned)(&trainer->layer_slopes[layer_idx][weight_idx] -
-                     trainer->slopes);
-      const unsigned adam_idx = trainer->velocities_length - velocity_idx - 1;
-      update_velocities(trainer->velocities[velocity_idx],
-                        trainer->velocities[adam_idx],
-                        trainer->layer_slopes[layer_idx][weight_idx]);
+      update_velocities(layer_velocities[weight_idx * 2],
+                        layer_velocities[weight_idx * 2 + 1],
+                        layer_slopes[weight_idx]);
 
-      apply_slope(layer.weights[weight_idx], trainer->velocities[velocity_idx],
-                  trainer->velocities[adam_idx]);
+      apply_slope(layer_weights[weight_idx], layer_velocities[weight_idx * 2],
+                  layer_velocities[weight_idx * 2 + 1]);
     }
 
     for (unsigned bias_idx = 0; bias_idx < layer.output_length; bias_idx++) {
-      const unsigned velocity_idx =
-          (unsigned)(&trainer
-                          ->layer_slopes[layer_idx][weights_length + bias_idx] -
-                     trainer->slopes);
-      const unsigned adam_idx = trainer->velocities_length - velocity_idx - 1;
-      update_velocities(
-          trainer->velocities[velocity_idx], trainer->velocities[adam_idx],
-          trainer->layer_slopes[layer_idx][weights_length + bias_idx]);
+      update_velocities(layer_velocities[weights_length * 2 + bias_idx * 2],
+                        layer_velocities[weights_length * 2 + bias_idx * 2 + 1],
+                        layer_slopes[weights_length + bias_idx]);
 
-      apply_slope(layer.biases[bias_idx], trainer->velocities[velocity_idx],
-                  trainer->velocities[adam_idx]);
+      apply_slope(layer_biases[bias_idx],
+                  layer_velocities[weights_length * 2 + bias_idx * 2],
+                  layer_velocities[weights_length * 2 + bias_idx * 2 + 1]);
     }
   }
 #undef apply_slope
@@ -796,6 +795,20 @@ bool init_trainer(NNTrainer *trainer, NNNetwork *network,
     return false;
   }
 
+  if (velocities_length) {
+    trainer->layer_velocities =
+        malloc(network->layers_length * sizeof(*trainer->layer_velocities));
+
+    if (trainer->layer_velocities == NULL) {
+      free(slopes_memory);
+      free(trainer->layer_slopes);
+      free(trainer->layer_deltas);
+      return false;
+    }
+  } else {
+    trainer->layer_velocities = NULL;
+  }
+
   trainer->network_loss =
       malloc(network->final_output_length * sizeof(*trainer->network_loss));
 
@@ -803,6 +816,7 @@ bool init_trainer(NNTrainer *trainer, NNNetwork *network,
     free(slopes_memory);
     free(trainer->layer_slopes);
     free(trainer->layer_deltas);
+    free(trainer->layer_velocities);
     return false;
   }
 
@@ -824,6 +838,8 @@ bool init_trainer(NNTrainer *trainer, NNNetwork *network,
 
   trainer->layer_slopes[0] = trainer->slopes;
   trainer->layer_deltas[0] = trainer->deltas;
+  if (velocities_length)
+    trainer->layer_velocities[0] = trainer->velocities;
 
   for (unsigned i = 0; i < network->layers_length - 1; i++) {
     const NNLayer l = network->layers[i];
@@ -832,6 +848,22 @@ bool init_trainer(NNTrainer *trainer, NNNetwork *network,
 
     trainer->layer_slopes[i + 1] = trainer->layer_slopes[i] + layer_size;
     trainer->layer_deltas[i + 1] = trainer->layer_deltas[i] + l.output_length;
+    switch (optimizer_type) {
+    case NN_SDG_OPTIMIZER:
+      break;
+    case NN_MOMENTUM_OPTIMIZER:
+      trainer->layer_velocities[i + 1] =
+          trainer->layer_velocities[i] + layer_size;
+      break;
+    case NN_ADAM_OPTIMIZER:
+      trainer->layer_velocities[i + 1] =
+          trainer->layer_velocities[i] + layer_size * 2;
+      break;
+
+    case NN_OPTIMIZER_COUNT__:
+    default:
+      assert(!"Invalid optimizer type");
+    }
   }
 
   trainer->steps = 0;
@@ -847,6 +879,7 @@ void free_trainer(NNTrainer *trainer) {
   free(trainer->slopes);
   free(trainer->layer_slopes);
   free(trainer->layer_deltas);
+  free(trainer->layer_velocities);
   free(trainer->network_loss);
   *trainer = (NNTrainer){0};
 }
