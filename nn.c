@@ -616,7 +616,7 @@ void adam_optimizer(NNTrainer *trainer, NNtype learning_rate,
     }
   }
 #undef apply_slope
-#undef update_momentum
+#undef update_velocities
 }
 
 static char *optimizer_function_name(NNOptimizerType optimizer_type) {
