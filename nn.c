@@ -92,6 +92,7 @@ typedef struct {
   NNLossType loss_type;
   NNOptimizerType optimizer_type;
   NNtype learning_rate;
+  NNtype clip_limit;
   NNtype momentum_damp;
   NNtype adam_damp;
   NNtype p;  // used in adam as running power
@@ -590,7 +591,8 @@ void adam_optimizer(NNTrainer *trainer, NNtype learning_rate,
        layer_idx++) {
     const NNLayer layer = network->layers[layer_idx];
     const unsigned weights_length = layer.input_length * layer.output_length;
-    NNtype *const restrict layer_velocities = trainer->layer_velocities[layer_idx];
+    NNtype *const restrict layer_velocities =
+        trainer->layer_velocities[layer_idx];
     const NNtype *const restrict layer_slopes =
         trainer->layer_slopes[layer_idx];
     NNtype *const restrict layer_weights = layer.weights;
@@ -833,6 +835,7 @@ bool init_trainer(NNTrainer *trainer, NNNetwork *network,
   trainer->network = network;
   trainer->network_loss_length = network->final_output_length;
   trainer->learning_rate = 0.01f;
+  trainer->clip_limit = 0;
   trainer->momentum_damp = 0.9f;
   trainer->adam_damp = 0.999f;
 
@@ -1162,6 +1165,29 @@ void calculate_network_slopes(NNTrainer *trainer, const NNtype *input) {
   }
 }
 
+static inline void clip_slopes(NNTrainer *trainer, unsigned batch_size) {
+  double slopes_length = 0;
+  double clip_limit = (double)trainer->clip_limit * (double)batch_size;
+
+  for (unsigned slope_idx = 0; slope_idx < trainer->slopes_length;
+       slope_idx++) {
+    slopes_length +=
+        (double)trainer->slopes[slope_idx] * (double)trainer->slopes[slope_idx];
+  }
+
+  slopes_length = sqrt(slopes_length);
+
+  if (slopes_length <= clip_limit)
+    return;
+
+  const NNtype factor = (NNtype)(clip_limit / slopes_length);
+
+  for (unsigned slope_idx = 0; slope_idx < trainer->slopes_length;
+       slope_idx++) {
+    trainer->slopes[slope_idx] *= factor;
+  }
+}
+
 void apply_slopes(NNTrainer *trainer, NNtype learning_rate,
                   unsigned batch_size) {
   assert(trainer);
@@ -1169,6 +1195,10 @@ void apply_slopes(NNTrainer *trainer, NNtype learning_rate,
   assert(isfinite(learning_rate) && learning_rate != 0);
 
   trainer->steps++;
+
+  if (trainer->clip_limit) {
+    clip_slopes(trainer, batch_size);
+  }
 
   optimizer_functions[trainer->optimizer_type](trainer, learning_rate,
                                                batch_size);
@@ -1955,6 +1985,108 @@ void test_trainer() {
     free_network(&network);
     free_trainer(&trainer);
   }
+  TEST_BLOCK("test clipping") {
+    pcg32_random_t rng;
+    pcg32_srandom_r(&rng, 0, 0);
+
+    NNNetwork network = {0};
+    init_network(&network, 2, (unsigned[]){1, 1});
+    network.layers[0].activation_type = NN_NO_ACTIVATION;
+    network.layers[0].init_type = NN_ZERO_INIT;
+
+    NNTrainer trainer = {0};
+    init_trainer(&trainer, &network, NN_SDG_OPTIMIZER);
+    trainer.loss_type = NN_MSE_LOSS;
+    trainer.learning_rate = 1.0f;
+
+    TEST_STEP("batch size 1") {
+      init_network_weights(&network, &rng);
+      trainer.slopes[0] = 3.0f;
+      trainer.slopes[1] = 4.0f;
+      trainer.clip_limit = 1;
+      apply_slopes(&trainer, trainer.learning_rate, 1);
+
+      CHECK_FLOAT(network.layers[0].weights[0], -0.6f);
+      CHECK_FLOAT(network.layers[0].biases[0], -0.8f);
+
+      init_network_weights(&network, &rng);
+      trainer.slopes[0] = 3.0f;
+      trainer.slopes[1] = 4.0f;
+      trainer.clip_limit = 10;
+      apply_slopes(&trainer, trainer.learning_rate, 1);
+
+      CHECK_FLOAT(network.layers[0].weights[0], -3.0f);
+      CHECK_FLOAT(network.layers[0].biases[0], -4.0f);
+
+      init_network_weights(&network, &rng);
+      trainer.slopes[0] = 0.0f;
+      trainer.slopes[1] = 0.0f;
+      trainer.clip_limit = 1;
+      apply_slopes(&trainer, trainer.learning_rate, 1);
+
+      CHECK_FLOAT(network.layers[0].weights[0], 0.0f);
+      CHECK_FLOAT(network.layers[0].biases[0], 0.0f);
+
+      init_network_weights(&network, &rng);
+      trainer.slopes[0] = 3.0f;
+      trainer.slopes[1] = 4.0f;
+      trainer.clip_limit = 0;
+      apply_slopes(&trainer, trainer.learning_rate, 1);
+
+      CHECK_FLOAT(network.layers[0].weights[0], -3.0f);
+      CHECK_FLOAT(network.layers[0].biases[0], -4.0f);
+    }
+
+    TEST_STEP("bigger batch sizes") {
+      init_network_weights(&network, &rng);
+      trainer.slopes[0] = 12.0f;
+      trainer.slopes[1] = 16.0f;
+      trainer.clip_limit = 1.0f;
+      apply_slopes(&trainer, trainer.learning_rate, 4);
+
+      CHECK_FLOAT(network.layers[0].weights[0], -0.6f);
+      CHECK_FLOAT(network.layers[0].biases[0], -0.8f);
+
+      init_network_weights(&network, &rng);
+      trainer.slopes[0] = 12.0f;
+      trainer.slopes[1] = 16.0f;
+      trainer.clip_limit = 10.0f;
+      apply_slopes(&trainer, trainer.learning_rate, 4);
+
+      CHECK_FLOAT(network.layers[0].weights[0], -3.0f);
+      CHECK_FLOAT(network.layers[0].biases[0], -4.0f);
+
+      init_network_weights(&network, &rng);
+      trainer.slopes[0] = 6.0f;
+      trainer.slopes[1] = 8.0f;
+      trainer.clip_limit = 5.0f;
+      apply_slopes(&trainer, trainer.learning_rate, 2);
+
+      CHECK_FLOAT(network.layers[0].weights[0], -3.0f);
+      CHECK_FLOAT(network.layers[0].biases[0], -4.0f);
+
+      init_network_weights(&network, &rng);
+      trainer.slopes[0] = 6.0f;
+      trainer.slopes[1] = 8.0f;
+      trainer.clip_limit = 4.9f;
+      apply_slopes(&trainer, trainer.learning_rate, 2);
+
+      CHECK_FLOAT(network.layers[0].weights[0], -2.94f);
+      CHECK_FLOAT(network.layers[0].biases[0], -3.92f);
+
+      init_network_weights(&network, &rng);
+      trainer.slopes[0] = 0.0f;
+      trainer.slopes[1] = 0.0f;
+      trainer.clip_limit = 1.0f;
+      apply_slopes(&trainer, trainer.learning_rate, 4);
+
+      CHECK_FLOAT(network.layers[0].weights[0], 0.0f);
+      CHECK_FLOAT(network.layers[0].biases[0], 0.0f);
+    }
+
+    free_network(&network);
+    free_trainer(&trainer);
+  }
 }
 
 void test_loss() {
@@ -2045,6 +2177,7 @@ void bench_and_print() {
   NNTrainer trainer = {0};
   init_trainer(&trainer, &network, NN_ADAM_OPTIMIZER);
   trainer.learning_rate = 1e-4f;
+  trainer.clip_limit = 1;
 
   init_network_weights(&network, &rng);
 
