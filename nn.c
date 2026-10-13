@@ -684,6 +684,20 @@ void update_observations(NNObservations *observations, const NNtype *inputs) {
   }
 }
 
+// Rescales `inputs` in place. If you want the old data saved, pass a copy here.
+void rescale_input(NNObservations observations, NNtype *inputs) {
+
+  for (unsigned i = 0; i < observations.length; i++) {
+    const NNtype spread =
+        observations.spreads[i] > 0 && observations.observations_count > 0
+            ? sqrtf(observations.spreads[i] /
+                    (NNtype)observations.observations_count)
+            : 1;
+
+    inputs[i] = (inputs[i] - observations.means[i]) / spread;
+  }
+}
+
 // layers_neurons is a count of how many outputs a layer has. The first items
 // in that array is the amount of inputs the network may accept, then the rest
 // of the numbers are the outputs for every sequential layer.
@@ -2323,36 +2337,62 @@ void test_helpers() {
 
 void test_rl() {
   TEST_BLOCK("observations") {
-    NNtype inputs[2] = {2, 10};
+    NNtype inputs[2];
     NNObservations observations = {0};
     init_observations(&observations, ARR_LENGTH(inputs));
 
-    update_observations(&observations, inputs);
+    TEST_STEP("rescale fresh struct") {
+      inputs[0] = 3.0f;
+      inputs[1] = 7.0f;
+      rescale_input(observations, inputs);
+      CHECK_FLOAT(inputs[0], 3.0f);
+      CHECK_FLOAT(inputs[1], 7.0f);
+    }
 
-    CHECK_FLOAT(observations.means[0], inputs[0]);
-    CHECK_FLOAT(observations.means[1], inputs[1]);
+    TEST_STEP("add observations") {
+      inputs[0] = 2.0f;
+      inputs[1] = 10.0f;
+      update_observations(&observations, inputs);
 
-    CHECK_FLOAT(observations.spreads[0], 0.0f);
-    CHECK_FLOAT(observations.spreads[1], 0.0f);
+      CHECK_FLOAT(observations.means[0], inputs[0]);
+      CHECK_FLOAT(observations.means[1], inputs[1]);
 
-    inputs[0] = 4;
-    inputs[1] = 20;
-    update_observations(&observations, inputs);
-    CHECK_FLOAT(observations.means[0], 3.0f);
-    CHECK_FLOAT(observations.means[1], 15.0f);
+      CHECK_FLOAT(observations.spreads[0], 0.0f);
+      CHECK_FLOAT(observations.spreads[1], 0.0f);
 
-    CHECK_FLOAT(observations.spreads[0], 2.0f);
-    CHECK_FLOAT(observations.spreads[1], 50.0f);
+      inputs[0] = 4;
+      inputs[1] = 20;
+      update_observations(&observations, inputs);
+      CHECK_FLOAT(observations.means[0], 3.0f);
+      CHECK_FLOAT(observations.means[1], 15.0f);
 
-    inputs[0] = 6;
-    inputs[1] = 30;
-    update_observations(&observations, inputs);
+      CHECK_FLOAT(observations.spreads[0], 2.0f);
+      CHECK_FLOAT(observations.spreads[1], 50.0f);
 
-    CHECK_FLOAT(observations.means[0], 4.0f);
-    CHECK_FLOAT(observations.means[1], 20.0f);
+      inputs[0] = 6;
+      inputs[1] = 30;
+      update_observations(&observations, inputs);
 
-    CHECK_FLOAT(observations.spreads[0], 8.0f);
-    CHECK_FLOAT(observations.spreads[1], 200.0f);
+      CHECK_FLOAT(observations.means[0], 4.0f);
+      CHECK_FLOAT(observations.means[1], 20.0f);
+
+      CHECK_FLOAT(observations.spreads[0], 8.0f);
+      CHECK_FLOAT(observations.spreads[1], 200.0f);
+    }
+
+    TEST_STEP("rescale after some observation") {
+      inputs[0] = 6.0f;
+      inputs[1] = 30.0f;
+      rescale_input(observations, inputs);
+      CHECK_FLOAT(inputs[0], 1.2247449f);
+      CHECK_FLOAT(inputs[1], 1.2247449f);
+
+      inputs[0] = 4.0f;
+      inputs[1] = 20.0f;
+      rescale_input(observations, inputs);
+      CHECK_FLOAT(inputs[0], 0.0f);
+      CHECK_FLOAT(inputs[1], 0.0f);
+    }
 
     free_observations(&observations);
   }
