@@ -73,6 +73,13 @@ typedef struct {
 } NNNetwork;
 
 typedef struct {
+  NNtype *means;
+  NNtype *spreads;
+  unsigned length;
+  unsigned observations_count;
+} NNObservations;
+
+typedef struct {
   NNNetwork *network;
   NNtype *slopes;
   unsigned slopes_length;
@@ -641,6 +648,41 @@ static const NNOptimizer optimizer_functions[] = {
     [NN_MOMENTUM_OPTIMIZER] = momentum_optimizer,
     [NN_ADAM_OPTIMIZER] = adam_optimizer,
 };
+
+bool init_observations(NNObservations *observations, unsigned length) {
+  assert(length > 0);
+
+  NNtype *memory = calloc(length * 2, sizeof(NNtype));
+  if (memory == NULL) {
+    return false;
+  }
+
+  observations->means = memory;
+  observations->spreads = observations->means + length;
+  observations->length = length;
+  observations->observations_count = 0;
+
+  return true;
+}
+
+void free_observations(NNObservations *observations) {
+  free(observations->means);
+  *observations = (NNObservations){0};
+}
+
+void update_observations(NNObservations *observations, const NNtype *inputs) {
+  const NNtype m = 1.0f / (NNtype)++observations->observations_count;
+
+  for (unsigned i = 0; i < observations->length; i++) {
+    const NNtype input = inputs[i];
+    const NNtype old_mean = observations->means[i];
+
+    observations->means[i] += (input - old_mean) * m;
+
+    observations->spreads[i] +=
+        (input - old_mean) * (input - observations->means[i]);
+  }
+}
 
 // layers_neurons is a count of how many outputs a layer has. The first items
 // in that array is the amount of inputs the network may accept, then the rest
@@ -2279,6 +2321,43 @@ void test_helpers() {
   }
 }
 
+void test_rl() {
+  TEST_BLOCK("observations") {
+    NNtype inputs[2] = {2, 10};
+    NNObservations observations = {0};
+    init_observations(&observations, ARR_LENGTH(inputs));
+
+    update_observations(&observations, inputs);
+
+    CHECK_FLOAT(observations.means[0], inputs[0]);
+    CHECK_FLOAT(observations.means[1], inputs[1]);
+
+    CHECK_FLOAT(observations.spreads[0], 0.0f);
+    CHECK_FLOAT(observations.spreads[1], 0.0f);
+
+    inputs[0] = 4;
+    inputs[1] = 20;
+    update_observations(&observations, inputs);
+    CHECK_FLOAT(observations.means[0], 3.0f);
+    CHECK_FLOAT(observations.means[1], 15.0f);
+
+    CHECK_FLOAT(observations.spreads[0], 2.0f);
+    CHECK_FLOAT(observations.spreads[1], 50.0f);
+
+    inputs[0] = 6;
+    inputs[1] = 30;
+    update_observations(&observations, inputs);
+
+    CHECK_FLOAT(observations.means[0], 4.0f);
+    CHECK_FLOAT(observations.means[1], 20.0f);
+
+    CHECK_FLOAT(observations.spreads[0], 8.0f);
+    CHECK_FLOAT(observations.spreads[1], 200.0f);
+
+    free_observations(&observations);
+  }
+}
+
 #if defined(NN_TEST) || defined(NN_BENCH)
 int main(void) {
 #ifdef NN_TEST
@@ -2288,6 +2367,7 @@ int main(void) {
   test_loss();
   test_trainer();
   test_helpers();
+  test_rl();
   if (!test_summary())
     return 1;
 #endif
