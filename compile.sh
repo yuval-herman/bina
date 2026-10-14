@@ -28,11 +28,11 @@ build_production() {
     -o nn nn.c -lm
 }
 
-build_emnist() {
+build_experiment() {
   gcc "${common_flags[@]}" \
-    -O3 -DNDEBUG \
+    -O1 \
     -fsanitize=address,undefined \
-    -o emnist emnist.c -lm
+    -o experiment experiment.c -lm
 }
 
 run_tests() {
@@ -63,8 +63,8 @@ case "$mode" in
     build_production
     ;;
 
-  emnist)
-    build_emnist
+  experiment)
+    build_experiment
     ;;
 
   test)
@@ -72,7 +72,7 @@ case "$mode" in
     ;;
 
   *)
-    echo "Usage: $0 [debug|prod|emnist|test]"
+    echo "Usage: $0 [debug|prod|experiment|test]"
     exit 1
     ;;
 esac
