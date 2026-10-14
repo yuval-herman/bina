@@ -702,7 +702,7 @@ void rescale_input(NNObservations observations, NNtype *inputs) {
 // in that array is the amount of inputs the network may accept, then the rest
 // of the numbers are the outputs for every sequential layer.
 bool init_network(NNNetwork *network, unsigned layers_length,
-                  unsigned *layers_neurons) {
+                  const unsigned *layers_neurons) {
   assert(layers_length >= 2 && "A network must be at least one layer long");
 
   size_t memory_length = 0;
