@@ -1,7 +1,7 @@
 #include "nn.c"
 
-void calculate_returns(NNtype gamma, unsigned length, const NNtype *rewards,
-                       NNtype *returns) {
+static void calculate_returns(NNtype gamma, unsigned length,
+                              const NNtype *rewards, NNtype *returns) {
   assert(length);
   assert(rewards);
   assert(returns);
@@ -13,7 +13,100 @@ void calculate_returns(NNtype gamma, unsigned length, const NNtype *rewards,
   }
 }
 
-unsigned world_reward(unsigned *mouse_pos, unsigned mouse_step) {
+// Clears and fills a one-hot array with 1 at the action index.
+// For convenience, this function returns the pointer it received.
+static inline NNtype *onehot(unsigned action, unsigned length,
+                             NNtype *onehot_arr) {
+  assert(length && onehot_arr);
+  assert(action < length);
+
+  memset(onehot_arr, 0, sizeof *onehot_arr * length);
+  onehot_arr[action] = 1;
+
+  return onehot_arr;
+}
+
+static inline void calculate_probabilities(NNtype *onehot, NNNetwork *network) {
+  feed_network(network, onehot);
+
+  softmax(network->final_output_length, network->final_output);
+}
+
+static void reinforce_train_step(NNTrainer *trainer, NNtype *onehot_arr,
+                                 unsigned episode_length,
+                                 const unsigned *episode_positions,
+                                 const NNtype *episode_advantage,
+                                 const unsigned *episode_actions) {
+  assert(trainer);
+  assert(onehot_arr);
+  NNNetwork *network = trainer->network;
+  assert(network);
+
+  memset(trainer->slopes, 0, trainer->slopes_length * sizeof(NNtype));
+
+  for (unsigned replay_idx = 0; replay_idx < episode_length; replay_idx++) {
+    calculate_probabilities(onehot(episode_positions[replay_idx],
+                                   network->layers[0].input_length, onehot_arr),
+                            network);
+
+    // gradient for the action taken
+    const NNtype action_grad =
+        episode_advantage[replay_idx] *
+        (network->final_output[episode_actions[replay_idx]] - 1);
+
+    // gradient
+    for (unsigned i = 0; i < network->final_output_length; i++) {
+      network->final_output[i] =
+          episode_advantage[replay_idx] * network->final_output[i];
+    }
+
+    network->final_output[episode_actions[replay_idx]] = action_grad;
+
+    calculate_layers_delta(trainer, network->final_output);
+
+    calculate_network_slopes(trainer, onehot_arr);
+  }
+
+  apply_slopes(trainer, trainer->learning_rate, episode_length);
+}
+
+static void value_network_train_step(NNTrainer *trainer, NNtype *onehot_arr,
+                                     unsigned episode_length,
+                                     const unsigned *episode_positions,
+                                     const NNtype *episode_returns,
+                                     NNtype *episode_advantage) {
+  assert(trainer);
+  assert(onehot_arr);
+  assert(episode_length);
+  assert(episode_positions);
+  assert(episode_returns);
+  assert(episode_advantage);
+  NNNetwork *network = trainer->network;
+  assert(network);
+
+  memset(trainer->slopes, 0, trainer->slopes_length * sizeof(NNtype));
+
+  for (unsigned replay_idx = 0; replay_idx < episode_length; replay_idx++) {
+    onehot(episode_positions[replay_idx], network->layers[0].input_length,
+           onehot_arr);
+
+    // Has feed network in it, so we can safely use the network output as
+    // value after calling it.
+    calculate_output_gradient(trainer, onehot_arr,
+                              &episode_returns[replay_idx]);
+
+    episode_advantage[replay_idx] =
+        episode_returns[replay_idx] - network->final_output[0];
+
+    calculate_layers_delta(trainer, NULL);
+
+    calculate_network_slopes(trainer, onehot_arr);
+  }
+
+  apply_slopes(trainer, trainer->learning_rate, episode_length);
+}
+
+static unsigned world_reward(unsigned *mouse_pos, unsigned mouse_step) {
   assert(mouse_step == 0 || mouse_step == 1);
   assert(mouse_pos);
 
@@ -26,10 +119,6 @@ unsigned world_reward(unsigned *mouse_pos, unsigned mouse_step) {
   }
 
   return (NNtype)(*mouse_pos == cheese_pos);
-}
-
-unsigned agent_action(pcg32_random_t *rng) {
-  return pcg32_bounded_rand(rng, 2);
 }
 
 int main(void) {
@@ -117,16 +206,8 @@ int main(void) {
     for (; step < EPISODE_LENGTH; step++) {
       episode_positions[step] = mouse;
 
-      // feed
-      memset(net_inputs, 0, sizeof *net_inputs * 5);
-      net_inputs[mouse] = 1;
-      feed_network(&policy_network, net_inputs);
-
-      // sample
-      softmax(policy_network.final_output_length, policy_network.final_output);
-      memcpy(policy_trainer.network_loss, policy_network.final_output,
-             policy_trainer.network_loss_length *
-                 sizeof(*policy_trainer.network_loss));
+      calculate_probabilities(onehot(mouse, ARR_LENGTH(net_inputs), net_inputs),
+                              &policy_network);
 
       unsigned idx =
           pcg32_categorical_sample(&rng, policy_network.final_output_length,
@@ -149,63 +230,12 @@ int main(void) {
 
     calculate_returns(0.9f, step, episode_rewards, episode_returns);
 
-    memset(value_trainer.slopes, 0,
-           value_trainer.slopes_length * sizeof(NNtype));
+    value_network_train_step(&value_trainer, net_inputs, step,
+                             episode_positions, episode_returns,
+                             episode_advantage);
 
-    for (unsigned replay_idx = 0; replay_idx < step; replay_idx++) {
-      memset(net_inputs, 0, sizeof *net_inputs * 5);
-      net_inputs[episode_positions[replay_idx]] = 1;
-
-      // Has feed network in it, so we can safely use the network output as
-      // value after calling it.
-      calculate_output_gradient(&value_trainer, net_inputs,
-                                &episode_returns[replay_idx]);
-
-      episode_advantage[replay_idx] =
-          episode_returns[replay_idx] - value_network.final_output[0];
-
-      calculate_layers_delta(&value_trainer, NULL);
-
-      calculate_network_slopes(&value_trainer, net_inputs);
-    }
-
-    apply_slopes(&value_trainer, value_trainer.learning_rate, step);
-
-    memset(policy_trainer.slopes, 0,
-           policy_trainer.slopes_length * sizeof(NNtype));
-
-    for (unsigned replay_idx = 0; replay_idx < step; replay_idx++) {
-      // feed
-      memset(net_inputs, 0, sizeof *net_inputs * 5);
-      net_inputs[episode_positions[replay_idx]] = 1;
-      feed_network(&policy_network, net_inputs);
-
-      // sample
-      softmax(policy_network.final_output_length, policy_network.final_output);
-      memcpy(policy_trainer.network_loss, policy_network.final_output,
-             policy_trainer.network_loss_length *
-                 sizeof(*policy_trainer.network_loss));
-
-      const unsigned idx = episode_actions[replay_idx];
-
-      // gradient for the action taken
-      const NNtype action_grad =
-          episode_advantage[replay_idx] * (policy_network.final_output[idx] - 1);
-
-      // gradient
-      for (unsigned i = 0; i < policy_network.final_output_length; i++) {
-        policy_network.final_output[i] =
-            episode_advantage[replay_idx] * policy_network.final_output[i];
-      }
-
-      policy_network.final_output[idx] = action_grad;
-
-      calculate_layers_delta(&policy_trainer, policy_network.final_output);
-
-      calculate_network_slopes(&policy_trainer, net_inputs);
-    }
-
-    apply_slopes(&policy_trainer, policy_trainer.learning_rate, step);
+    reinforce_train_step(&policy_trainer, net_inputs, step, episode_positions,
+                         episode_advantage, episode_actions);
 
     if (episode && episode % 200 == 0) {
       printf("Goal reached %u times\nAverage steps to reach goal were %g\n\n",
@@ -220,8 +250,7 @@ int main(void) {
       }
       printf("\nvalue:    ");
       for (unsigned i = 0; i < 5; i++) {
-        memset(net_inputs, 0, sizeof *net_inputs * 5);
-        net_inputs[i] = 1;
+        onehot(i, ARR_LENGTH(net_inputs), net_inputs);
         feed_network(&value_network, net_inputs);
 
         printf("%-7.3f", (double)value_network.final_output[0]);
