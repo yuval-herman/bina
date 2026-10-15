@@ -30,6 +30,7 @@ build_production() {
 
 build_experiment() {
   gcc "${common_flags[@]}" \
+    -Wno-error=unused-function \
     -O1 \
     -fsanitize=address,undefined \
     -o experiment experiment.c -lm

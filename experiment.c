@@ -106,19 +106,48 @@ static void value_network_train_step(NNTrainer *trainer, NNtype *onehot_arr,
   apply_slopes(trainer, trainer->learning_rate, episode_length);
 }
 
-static unsigned world_reward(unsigned *mouse_pos, unsigned mouse_step) {
-  assert(mouse_step == 0 || mouse_step == 1);
-  assert(mouse_pos);
+typedef struct {
+  NNtype x;
+  NNtype x_velocity;
+  NNtype pole_angle;
+  NNtype pole_angular_velocity;
+} WorldState;
 
-  unsigned cheese_pos = 4;
+static NNtype world_step(WorldState *world, unsigned agent_action) {
+  assert(agent_action == 0 || agent_action == 1);
+  assert(world);
 
-  if (mouse_step == 1) {
-    (*mouse_pos)++;
-  } else if (*mouse_pos != 0) {
-    (*mouse_pos)--;
-  }
+  const NNtype gravity = 9.8f;
+  const NNtype cart_mass = 1.0f;
+  const NNtype pole_mass = 0.1f;
+  const NNtype total_mass = cart_mass + pole_mass;
+  const NNtype half_pole_length = 0.5f;
+  const NNtype push_force =
+      10.0f * (agent_action ? 1 : -1); // (sign = push direction)
+  const NNtype step_duration = 0.02f;  // in seconds
+  const NNtype rod_constant = 4.0f / 3.0f;
 
-  return (NNtype)(*mouse_pos == cheese_pos);
+  const NNtype temp =
+      (push_force +
+       pole_mass * half_pole_length * world->pole_angular_velocity *
+           world->pole_angular_velocity * sinf(world->pole_angle)) /
+      total_mass;
+  const NNtype pole_angle_cos = cosf(world->pole_angle);
+  const NNtype pole_angle_acc =
+      (gravity * sinf(world->pole_angle) - pole_angle_cos * temp) /
+      (0.5f * (rod_constant -
+               pole_mass * pole_angle_cos * pole_angle_cos / total_mass));
+
+  const NNtype x_acc = temp - pole_mass * half_pole_length * pole_angle_acc *
+                                  cosf(world->pole_angle) / total_mass;
+
+  world->x += step_duration * world->x_velocity;
+  world->x_velocity += step_duration * x_acc;
+
+  world->pole_angle += step_duration * world->pole_angular_velocity;
+  world->pole_angular_velocity += step_duration * pole_angle_acc;
+
+  return (NNtype)(fabsf(world->pole_angle) > 0.2095f || fabsf(world->x) > 2.4f);
 }
 
 int main(void) {
@@ -158,7 +187,7 @@ int main(void) {
 
   print_returns(wander_returns, ARR_LENGTH(wander_returns));
 
-#else
+#elif 0
   pcg32_random_t rng;
   pcg32_srandom_r(&rng, 2, 0);
 
@@ -283,6 +312,32 @@ int main(void) {
 
   free_trainer(&value_trainer);
   free_network(&value_network);
+#else
+  pcg32_random_t rng;
+  pcg32_srandom_r(&rng, 0, 0);
+
+#define EPISODE_AMOUNT 1000
+#define EPISODE_LENGTH 200
+  unsigned steps_took = 0;
+
+  for (unsigned episode = 0; episode < EPISODE_AMOUNT; episode++) {
+    unsigned step = 0;
+    WorldState world = {
+        pcg32_float_range(&rng, -0.05f, 0.05f),
+        pcg32_float_range(&rng, -0.05f, 0.05f),
+        pcg32_float_range(&rng, -0.05f, 0.05f),
+        pcg32_float_range(&rng, -0.05f, 0.05f),
+    };
+    for (; step < EPISODE_LENGTH; step++) {
+      if (world_step(&world, pcg32_bounded_rand(&rng, 2)) == 1.0f) {
+        step += 1;
+        break;
+      }
+    }
+    steps_took += step;
+  }
+  printf("Average episode length: %u\n", steps_took / EPISODE_AMOUNT);
+
 #endif
   return 0;
 }
