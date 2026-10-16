@@ -99,6 +99,9 @@ typedef struct {
   NNLossType loss_type;
   NNOptimizerType optimizer_type;
   NNtype learning_rate;
+  NNtype learning_rate_decay; // Leave at 1 for constant learning rate.
+  NNtype learning_rate_min;   // When setting learning rate decay, learning rate
+                              // will not go bellow this value.
   NNtype clip_limit;
   NNtype momentum_damp;
   NNtype adam_damp;
@@ -927,6 +930,8 @@ bool init_trainer(NNTrainer *trainer, NNNetwork *network,
   trainer->loss_type = NN_MSE_LOSS;
   trainer->optimizer_type = optimizer_type;
   trainer->learning_rate = 0.01f;
+  trainer->learning_rate_decay = 1.0f;
+  trainer->learning_rate_min = 1e-5f;
   trainer->clip_limit = 0;
   trainer->momentum_damp = 0.9f;
   trainer->adam_damp = 0.999f;
@@ -1244,11 +1249,14 @@ static inline void clip_slopes(NNTrainer *trainer, unsigned batch_size) {
   }
 }
 
-void apply_slopes(NNTrainer *trainer, NNtype learning_rate,
-                  unsigned batch_size) {
+// Decays learning rate by `trainer->learning_rate_decay`
+void apply_slopes(NNTrainer *trainer, unsigned batch_size) {
   assert(trainer);
   assert(batch_size);
+  NNtype learning_rate = trainer->learning_rate;
   assert(isfinite(learning_rate) && learning_rate != 0);
+  assert(learning_rate >= trainer->learning_rate_min &&
+         "learning rate is below the minimum threshold set");
 
   trainer->steps++;
 
@@ -1258,11 +1266,17 @@ void apply_slopes(NNTrainer *trainer, NNtype learning_rate,
 
   optimizer_functions[trainer->optimizer_type](trainer, learning_rate,
                                                batch_size);
+
+  learning_rate *= trainer->learning_rate_decay;
+  if (learning_rate >= trainer->learning_rate_min) {
+    trainer->learning_rate = learning_rate;
+  }
 }
 
 // Calculates and applies a single training step for a batch of inputs.
 // `inputs` and `expected` are both 2d arrays that are expected to be in
 // contiguous memory.
+// Decays learning rate by `trainer->learning_rate_decay`
 void train_step(NNTrainer *trainer, unsigned batch_size,
                 unsigned *batch_indices, const NNtype *inputs,
                 const NNtype *expected) {
@@ -1288,7 +1302,7 @@ void train_step(NNTrainer *trainer, unsigned batch_size,
     calculate_network_slopes(trainer, input_batch);
   }
 
-  apply_slopes(trainer, trainer->learning_rate, batch_size);
+  apply_slopes(trainer, batch_size);
 }
 
 // indices is an array of indices into the inputs and outputs array, for every
@@ -2060,7 +2074,7 @@ void test_trainer() {
       trainer.slopes[0] = 3.0f;
       trainer.slopes[1] = 4.0f;
       trainer.clip_limit = 1;
-      apply_slopes(&trainer, trainer.learning_rate, 1);
+      apply_slopes(&trainer, 1);
 
       CHECK_FLOAT(network.layers[0].weights[0], -0.6f);
       CHECK_FLOAT(network.layers[0].biases[0], -0.8f);
@@ -2069,7 +2083,7 @@ void test_trainer() {
       trainer.slopes[0] = 3.0f;
       trainer.slopes[1] = 4.0f;
       trainer.clip_limit = 10;
-      apply_slopes(&trainer, trainer.learning_rate, 1);
+      apply_slopes(&trainer, 1);
 
       CHECK_FLOAT(network.layers[0].weights[0], -3.0f);
       CHECK_FLOAT(network.layers[0].biases[0], -4.0f);
@@ -2078,7 +2092,7 @@ void test_trainer() {
       trainer.slopes[0] = 0.0f;
       trainer.slopes[1] = 0.0f;
       trainer.clip_limit = 1;
-      apply_slopes(&trainer, trainer.learning_rate, 1);
+      apply_slopes(&trainer, 1);
 
       CHECK_FLOAT(network.layers[0].weights[0], 0.0f);
       CHECK_FLOAT(network.layers[0].biases[0], 0.0f);
@@ -2087,7 +2101,7 @@ void test_trainer() {
       trainer.slopes[0] = 3.0f;
       trainer.slopes[1] = 4.0f;
       trainer.clip_limit = 0;
-      apply_slopes(&trainer, trainer.learning_rate, 1);
+      apply_slopes(&trainer, 1);
 
       CHECK_FLOAT(network.layers[0].weights[0], -3.0f);
       CHECK_FLOAT(network.layers[0].biases[0], -4.0f);
@@ -2098,7 +2112,7 @@ void test_trainer() {
       trainer.slopes[0] = 12.0f;
       trainer.slopes[1] = 16.0f;
       trainer.clip_limit = 1.0f;
-      apply_slopes(&trainer, trainer.learning_rate, 4);
+      apply_slopes(&trainer, 4);
 
       CHECK_FLOAT(network.layers[0].weights[0], -0.6f);
       CHECK_FLOAT(network.layers[0].biases[0], -0.8f);
@@ -2107,7 +2121,7 @@ void test_trainer() {
       trainer.slopes[0] = 12.0f;
       trainer.slopes[1] = 16.0f;
       trainer.clip_limit = 10.0f;
-      apply_slopes(&trainer, trainer.learning_rate, 4);
+      apply_slopes(&trainer, 4);
 
       CHECK_FLOAT(network.layers[0].weights[0], -3.0f);
       CHECK_FLOAT(network.layers[0].biases[0], -4.0f);
@@ -2116,7 +2130,7 @@ void test_trainer() {
       trainer.slopes[0] = 6.0f;
       trainer.slopes[1] = 8.0f;
       trainer.clip_limit = 5.0f;
-      apply_slopes(&trainer, trainer.learning_rate, 2);
+      apply_slopes(&trainer, 2);
 
       CHECK_FLOAT(network.layers[0].weights[0], -3.0f);
       CHECK_FLOAT(network.layers[0].biases[0], -4.0f);
@@ -2125,7 +2139,7 @@ void test_trainer() {
       trainer.slopes[0] = 6.0f;
       trainer.slopes[1] = 8.0f;
       trainer.clip_limit = 4.9f;
-      apply_slopes(&trainer, trainer.learning_rate, 2);
+      apply_slopes(&trainer, 2);
 
       CHECK_FLOAT(network.layers[0].weights[0], -2.94f);
       CHECK_FLOAT(network.layers[0].biases[0], -3.92f);
@@ -2134,10 +2148,78 @@ void test_trainer() {
       trainer.slopes[0] = 0.0f;
       trainer.slopes[1] = 0.0f;
       trainer.clip_limit = 1.0f;
-      apply_slopes(&trainer, trainer.learning_rate, 4);
+      apply_slopes(&trainer, 4);
 
       CHECK_FLOAT(network.layers[0].weights[0], 0.0f);
       CHECK_FLOAT(network.layers[0].biases[0], 0.0f);
+    }
+
+    free_network(&network);
+    free_trainer(&trainer);
+  }
+  TEST_BLOCK("learning rate decay") {
+    pcg32_random_t rng;
+    pcg32_srandom_r(&rng, 0, 0);
+
+    NNNetwork network = {0};
+    init_network(&network, 2, (unsigned[]){1, 1});
+
+    NNTrainer trainer = {0};
+    init_trainer(&trainer, &network, NN_SGD_OPTIMIZER);
+
+    TEST_STEP("stop decay at limit") {
+      trainer.learning_rate = 0.1f;
+      trainer.learning_rate_decay = 0.5f;
+      trainer.learning_rate_min = 0.02f;
+
+      apply_slopes(&trainer, 1);
+      CHECK_FLOAT(trainer.learning_rate, 0.05f);
+
+      apply_slopes(&trainer, 1);
+      CHECK_FLOAT(trainer.learning_rate, 0.025f);
+
+      apply_slopes(&trainer, 1);
+      CHECK_FLOAT(trainer.learning_rate, 0.025f);
+    }
+    TEST_STEP("decay at expected rate") {
+      trainer.learning_rate = 0.8f;
+      trainer.learning_rate_decay = 0.9f;
+      trainer.learning_rate_min = 0.5f;
+
+      apply_slopes(&trainer, 1);
+      CHECK_FLOAT(trainer.learning_rate, 0.72f);
+
+      apply_slopes(&trainer, 1);
+      CHECK_FLOAT(trainer.learning_rate, 0.648f);
+
+      apply_slopes(&trainer, 1);
+      CHECK_FLOAT(trainer.learning_rate, 0.5832f);
+
+      apply_slopes(&trainer, 1);
+      CHECK_FLOAT(trainer.learning_rate, 0.52488f);
+
+      apply_slopes(&trainer, 1);
+      CHECK_FLOAT(trainer.learning_rate, 0.52488f);
+
+      apply_slopes(&trainer, 1);
+      CHECK_FLOAT(trainer.learning_rate, 0.52488f);
+
+      apply_slopes(&trainer, 1);
+      CHECK_FLOAT(trainer.learning_rate, 0.52488f);
+    }
+    TEST_STEP("no decay") {
+      trainer.learning_rate = 0.1f;
+      trainer.learning_rate_decay = 1.0f;
+      trainer.learning_rate_min = 0.05f;
+
+      apply_slopes(&trainer, 1);
+      CHECK_FLOAT(trainer.learning_rate, 0.1f);
+
+      apply_slopes(&trainer, 1);
+      CHECK_FLOAT(trainer.learning_rate, 0.1f);
+
+      apply_slopes(&trainer, 1);
+      CHECK_FLOAT(trainer.learning_rate, 0.1f);
     }
 
     free_network(&network);

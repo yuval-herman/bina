@@ -69,7 +69,7 @@ static void reinforce_train_step(NNTrainer *trainer, unsigned episode_length,
     calculate_network_slopes(trainer, episode_positions);
   }
 
-  apply_slopes(trainer, trainer->learning_rate, episode_length);
+  apply_slopes(trainer, episode_length);
 }
 
 static void value_network_train_step(NNTrainer *trainer,
@@ -104,7 +104,7 @@ static void value_network_train_step(NNTrainer *trainer,
     calculate_network_slopes(trainer, episode_positions);
   }
 
-  apply_slopes(trainer, trainer->learning_rate, episode_length);
+  apply_slopes(trainer, episode_length);
 }
 
 typedef struct {
@@ -203,7 +203,9 @@ int main(void) {
 
   NNTrainer policy_trainer = {0};
   init_trainer(&policy_trainer, &policy_network, NN_ADAM_OPTIMIZER);
-  policy_trainer.learning_rate = 0.01f;
+  policy_trainer.learning_rate = 0.015f;
+  policy_trainer.learning_rate_decay = 0.997f;
+  policy_trainer.learning_rate_min = 3e-4f;
   policy_trainer.loss_type = NN_CROSS_ENTROPY_LOSS;
 
   NNNetwork value_network = {0};
@@ -291,7 +293,7 @@ int main(void) {
                          episode_advantage, episode_actions);
 
     if (episode && episode % 200 == 0) {
-      printf("Average episode length: %u\n", steps_took / 200);
+      printf("Average episode length: %u, current episode (%u)\n", steps_took / 200, episode);
       steps_took = 0;
     }
   }
