@@ -43,7 +43,7 @@ typedef enum {
 } NNLossType;
 
 typedef enum {
-  NN_SDG_OPTIMIZER = 0,
+  NN_SGD_OPTIMIZER = 0,
   NN_MOMENTUM_OPTIMIZER,
   NN_ADAM_OPTIMIZER,
   NN_OPTIMIZER_COUNT__,
@@ -634,7 +634,7 @@ static char *optimizer_function_name(NNOptimizerType optimizer_type) {
     assert(!"impossible optimizer type");
     return "impossible optimizer type";
 
-  case NN_SDG_OPTIMIZER:
+  case NN_SGD_OPTIMIZER:
     return "SDG";
   case NN_MOMENTUM_OPTIMIZER:
     return "momentum";
@@ -644,7 +644,7 @@ static char *optimizer_function_name(NNOptimizerType optimizer_type) {
 }
 
 static const NNOptimizer optimizer_functions[] = {
-    [NN_SDG_OPTIMIZER] = SDG_optimizer,
+    [NN_SGD_OPTIMIZER] = SDG_optimizer,
     [NN_MOMENTUM_OPTIMIZER] = momentum_optimizer,
     [NN_ADAM_OPTIMIZER] = adam_optimizer,
 };
@@ -813,7 +813,7 @@ bool init_trainer(NNTrainer *trainer, NNNetwork *network,
 
   unsigned velocities_length = 0;
   switch (optimizer_type) {
-  case NN_SDG_OPTIMIZER:
+  case NN_SGD_OPTIMIZER:
     break;
   case NN_MOMENTUM_OPTIMIZER:
     velocities_length = slopes_length;
@@ -880,7 +880,7 @@ bool init_trainer(NNTrainer *trainer, NNNetwork *network,
 
   trainer->slopes = slopes_memory;
   trainer->deltas = trainer->slopes + slopes_length;
-  trainer->velocities = optimizer_type == NN_SDG_OPTIMIZER
+  trainer->velocities = optimizer_type == NN_SGD_OPTIMIZER
                             ? NULL
                             : trainer->deltas + deltas_length;
 
@@ -890,10 +890,6 @@ bool init_trainer(NNTrainer *trainer, NNNetwork *network,
 
   trainer->network = network;
   trainer->network_loss_length = network->final_output_length;
-  trainer->learning_rate = 0.01f;
-  trainer->clip_limit = 0;
-  trainer->momentum_damp = 0.9f;
-  trainer->adam_damp = 0.999f;
 
   trainer->layer_slopes[0] = trainer->slopes;
   trainer->layer_deltas[0] = trainer->deltas;
@@ -908,7 +904,7 @@ bool init_trainer(NNTrainer *trainer, NNNetwork *network,
     trainer->layer_slopes[i + 1] = trainer->layer_slopes[i] + layer_size;
     trainer->layer_deltas[i + 1] = trainer->layer_deltas[i] + l.output_length;
     switch (optimizer_type) {
-    case NN_SDG_OPTIMIZER:
+    case NN_SGD_OPTIMIZER:
       break;
     case NN_MOMENTUM_OPTIMIZER:
       trainer->layer_velocities[i + 1] =
@@ -930,6 +926,10 @@ bool init_trainer(NNTrainer *trainer, NNNetwork *network,
   trainer->p2 = 1;
   trainer->loss_type = NN_MSE_LOSS;
   trainer->optimizer_type = optimizer_type;
+  trainer->learning_rate = 0.01f;
+  trainer->clip_limit = 0;
+  trainer->momentum_damp = 0.9f;
+  trainer->adam_damp = 0.999f;
 
   return true;
 }
@@ -1832,7 +1832,7 @@ void test_trainer() {
            activation_type < NN_ACTIVATION_COUNT__; activation_type++) {
         for (NNLossType loss_type = NN_MSE_LOSS; loss_type < NN_LOSS_COUNT__;
              loss_type++) {
-          for (NNOptimizerType optimizer_type = NN_SDG_OPTIMIZER;
+          for (NNOptimizerType optimizer_type = NN_SGD_OPTIMIZER;
                optimizer_type < NN_OPTIMIZER_COUNT__; optimizer_type++) {
             TEST_STEP("activation = %s init = %s loss = %s optimizer = %s",
                       activation_function_name(activation_type),
@@ -2026,7 +2026,7 @@ void test_trainer() {
     init_network_weights(&network, &rng);
 
     NNTrainer trainer = {0};
-    init_trainer(&trainer, &network, NN_SDG_OPTIMIZER);
+    init_trainer(&trainer, &network, NN_SGD_OPTIMIZER);
     trainer.loss_type = NN_MSE_LOSS;
     trainer.learning_rate = 0.001f;
 
@@ -2051,7 +2051,7 @@ void test_trainer() {
     network.layers[0].init_type = NN_ZERO_INIT;
 
     NNTrainer trainer = {0};
-    init_trainer(&trainer, &network, NN_SDG_OPTIMIZER);
+    init_trainer(&trainer, &network, NN_SGD_OPTIMIZER);
     trainer.loss_type = NN_MSE_LOSS;
     trainer.learning_rate = 1.0f;
 
