@@ -13,6 +13,25 @@ static void calculate_returns(NNtype discount, unsigned length,
   }
 }
 
+static void calculate_gae(NNtype discount, NNtype gae_lambda, unsigned length,
+                          const NNtype *rewards, NNtype *values,
+                          NNtype *advantages) {
+  assert(length > 0);
+  assert(rewards);
+  assert(values);
+  assert(advantages);
+
+  const NNtype gae_mul = discount * gae_lambda;
+
+#define surprise(idx) (rewards[idx] + discount * values[idx + 1] - values[idx])
+  advantages[length - 1] = surprise(length - 1);
+
+  for (unsigned i = length - 1; i > 0; i--) {
+    advantages[i - 1] = surprise(i - 1) + gae_mul * advantages[i];
+  }
+#undef surprise
+}
+
 // Clears and fills a one-hot array with 1 at the action index.
 // For convenience, this function returns the pointer it received.
 static inline NNtype *onehot(unsigned action, unsigned length,
@@ -153,11 +172,11 @@ static bool world_step(WorldState *world, unsigned agent_action) {
 }
 
 int main(void) {
-#if 0
-#define print_returns(returns, length)                                         \
+#if 1
+#define print_array(arr, length)                                               \
   putchar('[');                                                                \
   for (unsigned i = 0; i < (length); i++) {                                    \
-    printf("%g", (double)(returns)[i]);                                        \
+    printf("%g", (double)(arr)[i]);                                            \
     if (i < (length) - 1)                                                      \
       printf(", ");                                                            \
   }                                                                            \
@@ -172,7 +191,7 @@ int main(void) {
 
   calculate_returns(0.9f, ARR_LENGTH(returns), rewards, returns);
 
-  print_returns(returns, ARR_LENGTH(returns));
+  print_array(returns, ARR_LENGTH(returns));
 
   rewards[0] = 1;
   rewards[1] = 0;
@@ -180,15 +199,29 @@ int main(void) {
 
   calculate_returns(0.5f, ARR_LENGTH(returns), rewards, returns);
 
-  print_returns(returns, ARR_LENGTH(returns));
+  print_array(returns, ARR_LENGTH(returns));
 
   NNtype wander_rewards[6] = {0, 0, 0, 0, 0, 1};
   NNtype wander_returns[6];
 
   calculate_returns(0.9f, 6, wander_rewards, wander_returns);
 
-  print_returns(wander_returns, ARR_LENGTH(wander_returns));
+  print_array(wander_returns, ARR_LENGTH(wander_returns));
 
+  NNtype gae_advantage[3];
+  NNtype values[4];
+
+  rewards[0] = 0;
+  rewards[1] = 0;
+  rewards[2] = 1;
+
+  values[0] = 0.5f;
+  values[1] = 0.7f;
+  values[2] = 0.9f;
+  values[3] = 0.0f;
+  calculate_gae(0.9f, 0, 3, rewards, values, gae_advantage);
+
+  print_array(gae_advantage, ARR_LENGTH(gae_advantage));
 #else
   pcg32_random_t rng;
   pcg32_srandom_r(&rng, 0, 0);
@@ -293,7 +326,8 @@ int main(void) {
                          episode_advantage, episode_actions);
 
     if (episode && episode % 200 == 0) {
-      printf("Average episode length: %u, current episode (%u)\n", steps_took / 200, episode);
+      printf("Average episode length: %u, current episode (%u)\n",
+             steps_took / 200, episode);
       steps_took = 0;
     }
   }
