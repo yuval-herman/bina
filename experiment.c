@@ -194,9 +194,11 @@ int main(void) {
   pcg32_srandom_r(&rng, 0, 0);
 
   NNNetwork policy_network = {0};
-  const unsigned policy_layers[] = {4, 2};
+  const unsigned policy_layers[] = {4, 8, 2};
   init_network(&policy_network, ARR_LENGTH(policy_layers), policy_layers);
-  policy_network.layers[0].activation_type = NN_NO_ACTIVATION;
+  for (unsigned i = 0; i < policy_network.layers_length; i++) {
+    policy_network.layers[i].init_type = NN_HE_INIT;
+  }
   init_network_weights(&policy_network, &rng);
 
   NNTrainer policy_trainer = {0};
@@ -205,16 +207,32 @@ int main(void) {
   policy_trainer.loss_type = NN_CROSS_ENTROPY_LOSS;
 
   NNNetwork value_network = {0};
-  const unsigned value_layers[] = {4, 1};
+  const unsigned value_layers[] = {4, 8, 1};
   init_network(&value_network, ARR_LENGTH(value_layers), value_layers);
-  value_network.layers[0].activation_type = NN_NO_ACTIVATION;
+  for (unsigned i = 0; i < value_network.layers_length; i++) {
+    value_network.layers[i].init_type = NN_HE_INIT;
+  }
   init_network_weights(&value_network, &rng);
 
   NNTrainer value_trainer = {0};
-  init_trainer(&value_trainer, &value_network, NN_ADAM_OPTIMIZER);
+  init_trainer(&value_trainer, &value_network, NN_SGD_OPTIMIZER);
   value_trainer.learning_rate = 0.01f;
   value_trainer.loss_type = NN_MSE_LOSS;
 
+  printf("policy layers = {");
+  for (unsigned i = 0; i < ARR_LENGTH(policy_layers); i++) {
+    printf("%u", policy_layers[i]);
+    if (i < ARR_LENGTH(policy_layers) - 1)
+      putchar(',');
+  }
+  printf("}\n");
+  printf("value layers  = {");
+  for (unsigned i = 0; i < ARR_LENGTH(value_layers); i++) {
+    printf("%u", value_layers[i]);
+    if (i < ARR_LENGTH(value_layers) - 1)
+      putchar(',');
+  }
+  printf("}\n\n");
 #define EPISODE_AMOUNT 1000
 #define EPISODE_LENGTH 200
   NNtype episode_inputs[EPISODE_LENGTH][4];
@@ -277,7 +295,7 @@ int main(void) {
       steps_took = 0;
     }
   }
-  printf("\nAverage episode length: %u\n", steps_took / 200);
+  printf("\nAverage episode length: %u\n", steps_took / 199);
 
   free_trainer(&policy_trainer);
   free_network(&policy_network);
