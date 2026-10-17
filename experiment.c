@@ -2,6 +2,7 @@
 
 static void calculate_returns(NNtype discount, unsigned length,
                               const NNtype *rewards, NNtype *returns) {
+  assert(0 <= discount && discount <= 1);
   assert(length);
   assert(rewards);
   assert(returns);
@@ -16,6 +17,8 @@ static void calculate_returns(NNtype discount, unsigned length,
 static void calculate_gae(NNtype discount, NNtype gae_lambda, unsigned length,
                           const NNtype *rewards, NNtype *values,
                           NNtype *advantages) {
+  assert(0 <= discount && discount <= 1);
+  assert(0 <= gae_lambda && gae_lambda <= 1);
   assert(length > 0);
   assert(rewards);
   assert(values);
@@ -115,9 +118,6 @@ static void value_network_train_step(NNTrainer *trainer,
     calculate_output_gradient(trainer, episode_positions,
                               &episode_returns[replay_idx]);
 
-    episode_advantage[replay_idx] =
-        episode_returns[replay_idx] - network->final_output[0];
-
     calculate_layers_delta(trainer, NULL);
 
     calculate_network_slopes(trainer, episode_positions);
@@ -172,7 +172,7 @@ static bool world_step(WorldState *world, unsigned agent_action) {
 }
 
 int main(void) {
-#if 1
+#if 0
 #define print_array(arr, length)                                               \
   putchar('[');                                                                \
   for (unsigned i = 0; i < (length); i++) {                                    \
@@ -251,7 +251,7 @@ int main(void) {
 
   NNTrainer value_trainer = {0};
   init_trainer(&value_trainer, &value_network, NN_SGD_OPTIMIZER);
-  value_trainer.learning_rate = 0.01f;
+  value_trainer.learning_rate = 0.05f;
   value_trainer.loss_type = NN_MSE_LOSS;
 
   printf("policy layers = {");
@@ -270,13 +270,17 @@ int main(void) {
   printf("}\n\n");
 #define EPISODE_AMOUNT 1000
 #define EPISODE_LENGTH 200
-  NNtype episode_inputs[EPISODE_LENGTH][4];
+  NNtype episode_inputs[EPISODE_LENGTH + 1][4];
+  NNtype episode_values[EPISODE_LENGTH + 1];
   unsigned episode_actions[EPISODE_LENGTH];
   NNtype episode_rewards[EPISODE_LENGTH];
   NNtype episode_returns[EPISODE_LENGTH];
   NNtype episode_advantage[EPISODE_LENGTH];
 
   unsigned steps_took = 0;
+  unsigned caps_hit = 0;
+  double value_mean = 0;
+  double value_capped_mean = 0;
 
   for (unsigned episode = 0; episode < EPISODE_AMOUNT; episode++) {
     memset(episode_inputs, 0, sizeof **episode_inputs * EPISODE_LENGTH * 4);
@@ -292,6 +296,7 @@ int main(void) {
         pcg32_float_range(&rng, -0.05f, 0.05f),
     };
 
+    bool hit_cap = true; // Whether we hit the episode step cap
     for (; step < EPISODE_LENGTH; step++) {
       episode_inputs[step][0] = world.x;
       episode_inputs[step][1] = world.x_velocity;
@@ -306,7 +311,11 @@ int main(void) {
 
       episode_actions[step] = idx;
 
+      feed_network(&value_network, episode_inputs[step]);
+      episode_values[step] = value_network.final_output[0];
+
       if (!world_step(&world, idx)) {
+        hit_cap = false;
         step += 1;
         break;
       }
@@ -315,9 +324,29 @@ int main(void) {
 
       episode_rewards[step] = (NNtype)reward;
     }
+    if (hit_cap) {
+      // save inputs for the next step in the case the pole did not fall and we
+      // just hit the cap.
+      episode_inputs[step][0] = world.x;
+      episode_inputs[step][1] = world.x_velocity;
+      episode_inputs[step][2] = world.pole_angle;
+      episode_inputs[step][3] = world.pole_angular_velocity;
+
+      feed_network(&value_network, episode_inputs[step]);
+      value_capped_mean +=
+          (double)(episode_values[step] = value_network.final_output[0]);
+
+      caps_hit += hit_cap;
+    } else {
+      episode_values[step] = 0;
+    }
+    value_mean += (double)episode_values[0];
+
     steps_took += step;
 
     calculate_returns(0.9f, step, episode_rewards, episode_returns);
+    calculate_gae(0.9f, 0.5f, step, episode_rewards, episode_values,
+                  episode_advantage);
 
     value_network_train_step(&value_trainer, step, &episode_inputs[0][0],
                              episode_returns, episode_advantage);
@@ -325,13 +354,21 @@ int main(void) {
     reinforce_train_step(&policy_trainer, step, &episode_inputs[0][0],
                          episode_advantage, episode_actions);
 
-    if (episode && episode % 200 == 0) {
+    if ((episode + 1) % 200 == 0) {
       printf("Average episode length: %u, current episode (%u)\n",
              steps_took / 200, episode);
+      printf("Capped episodes: %u\n", caps_hit);
+      printf("mean values[0]: %g\n", value_mean / (double)200);
+      if (caps_hit)
+        printf("capped mean values extra: %g\n",
+               value_capped_mean / (double)caps_hit);
       steps_took = 0;
+      caps_hit = 0;
+      value_mean = 0;
+      value_capped_mean = 0;
+      putchar('\n');
     }
   }
-  printf("\nAverage episode length: %u\n", steps_took / 199);
 
   free_trainer(&policy_trainer);
   free_network(&policy_network);
