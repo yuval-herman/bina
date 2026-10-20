@@ -35,6 +35,16 @@ static void calculate_gae(NNtype discount, NNtype gae_lambda, unsigned length,
 #undef surprise
 }
 
+// Calculates log probability of a Gaussian distribution
+static NNtype calculate_log_probability(NNtype action, NNtype mean,
+                                        NNtype stdev) {
+  assert(stdev > 0);
+  const NNtype ln_2_pi = logf(2 * (NNtype)M_PI) / 2;
+  const NNtype z = (action - mean) / stdev;
+
+  return -(z * z) / 2 - logf(stdev) - ln_2_pi;
+}
+
 // Clears and fills a one-hot array with 1 at the action index.
 // For convenience, this function returns the pointer it received.
 static inline NNtype *onehot(unsigned action, unsigned length,
@@ -55,10 +65,56 @@ static inline void calculate_probabilities(const NNtype *inputs,
   softmax(network->final_output_length, network->final_output);
 }
 
+static inline NNtype get_agent_action(pcg32_random_t *rng, const NNtype *inputs,
+                                      NNNetwork *network) {
+  feed_network(network, inputs);
+
+  const NNtype mean = network->final_output[0];
+  const NNtype stdev = expf(network->final_output[1]);
+
+  return mean + stdev * pcg32_normal_float(rng);
+}
+
+static void reinforce_train_step_continous(NNTrainer *trainer,
+                                           unsigned episode_length,
+                                           const NNtype *episode_inputs,
+                                           const NNtype *episode_advantage,
+                                           const NNtype *episode_actions) {
+  assert(trainer);
+  assert(episode_inputs);
+  assert(episode_advantage);
+  assert(episode_actions);
+  NNNetwork *network = trainer->network;
+  assert(network);
+
+  memset(trainer->slopes, 0, trainer->slopes_length * sizeof(NNtype));
+
+  for (unsigned replay_idx = 0; replay_idx < episode_length; replay_idx++) {
+    const NNtype *inputs =
+        episode_inputs + network->layers[0].input_length * replay_idx;
+    feed_network(network, inputs);
+
+    const NNtype mean = network->final_output[0];
+    const NNtype stdev_recip = 1 / expf(network->final_output[1]);
+
+    const NNtype z = (episode_actions[replay_idx] - mean) * stdev_recip;
+    const NNtype advantage = episode_advantage[replay_idx];
+
+    network->final_output[0] = -advantage * z * stdev_recip;
+    network->final_output[1] = -advantage * (z * z - 1);
+
+    calculate_layers_delta(trainer, network->final_output);
+
+    calculate_network_slopes(trainer, inputs);
+  }
+
+  apply_slopes(trainer, episode_length);
+}
+
 static void reinforce_train_step(NNTrainer *trainer, unsigned episode_length,
                                  const NNtype *episode_inputs,
                                  const NNtype *episode_advantage,
-                                 const unsigned *episode_actions) {
+                                 const NNtype *episode_actions) {
   assert(trainer);
   assert(episode_inputs);
   assert(episode_advantage);
@@ -71,12 +127,11 @@ static void reinforce_train_step(NNTrainer *trainer, unsigned episode_length,
   for (unsigned replay_idx = 0; replay_idx < episode_length; replay_idx++) {
     const NNtype *episode_positions =
         episode_inputs + network->layers[0].input_length * replay_idx;
-    calculate_probabilities(episode_positions, network);
+    feed_network(network, episode_positions);
 
     // gradient for the action taken
     const NNtype action_grad =
-        episode_advantage[replay_idx] *
-        (network->final_output[episode_actions[replay_idx]] - 1);
+        episode_advantage[replay_idx] * (network->final_output[0] - 1);
 
     // gradient
     for (unsigned i = 0; i < network->final_output_length; i++) {
@@ -84,7 +139,7 @@ static void reinforce_train_step(NNTrainer *trainer, unsigned episode_length,
           episode_advantage[replay_idx] * network->final_output[i];
     }
 
-    network->final_output[episode_actions[replay_idx]] = action_grad;
+    network->final_output[0] = action_grad;
 
     calculate_layers_delta(trainer, network->final_output);
 
@@ -127,48 +182,114 @@ static void value_network_train_step(NNTrainer *trainer,
 }
 
 typedef struct {
-  NNtype x;
-  NNtype x_velocity;
-  NNtype pole_angle;
-  NNtype pole_angular_velocity;
+  NNtype angle;
+  NNtype angular_velocity;
 } WorldState;
 
-// return true if cart is within bounds, false otherwise
-static bool world_step(WorldState *world, unsigned agent_action) {
-  assert(agent_action == 0 || agent_action == 1);
+static inline NNtype clamp(NNtype value, NNtype min, NNtype max) {
+  return (value < min) ? min : ((value > max) ? max : value);
+}
+
+static inline NNtype wrap(NNtype value, NNtype min, NNtype max) {
+  const NNtype range = max - min;
+  const NNtype inv_range = 1.0f / range;
+
+  const NNtype t = (value - min) * inv_range;
+  const NNtype wrapped_t = t - floorf(t);
+
+  return wrapped_t * range + min;
+}
+
+// Returns the reward. Agent action is the torque.
+static NNtype world_step(WorldState *world, NNtype agent_action) {
   assert(world);
 
-  const NNtype gravity = 9.8f;
-  const NNtype cart_mass = 1.0f;
-  const NNtype pole_mass = 0.1f;
-  const NNtype total_mass = cart_mass + pole_mass;
-  const NNtype half_pole_length = 0.5f;
-  const NNtype push_force =
-      10.0f * (agent_action ? 1 : -1); // (sign = push direction)
-  const NNtype step_duration = 0.02f;  // in seconds
-  const NNtype rod_constant = 4.0f / 3.0f;
+  const NNtype step_duration = 0.05f; // in seconds
 
-  const NNtype temp =
-      (push_force +
-       pole_mass * half_pole_length * world->pole_angular_velocity *
-           world->pole_angular_velocity * sinf(world->pole_angle)) /
-      total_mass;
-  const NNtype pole_angle_cos = cosf(world->pole_angle);
-  const NNtype pole_angle_acc =
-      (gravity * sinf(world->pole_angle) - pole_angle_cos * temp) /
-      (0.5f * (rod_constant -
-               pole_mass * pole_angle_cos * pole_angle_cos / total_mass));
+  const NNtype gravity = 10.0f;
+  const NNtype mass = 1.0f;
+  const NNtype length = 1.0f;
+  const NNtype max_torque = 2.0f;
+  const NNtype max_speed = 8.0f;
 
-  const NNtype x_acc = temp - pole_mass * half_pole_length * pole_angle_acc *
-                                  cosf(world->pole_angle) / total_mass;
+  const NNtype t = wrap(world->angle, -(NNtype)M_PI, (NNtype)M_PI);
+  const NNtype td = world->angular_velocity;
+  const NNtype u = clamp(agent_action, -max_torque, max_torque);
 
-  world->x += step_duration * world->x_velocity;
-  world->x_velocity += step_duration * x_acc;
+  const NNtype reward = -(t * t + 0.1f * td * td + 0.001f * u * u);
 
-  world->pole_angle += step_duration * world->pole_angular_velocity;
-  world->pole_angular_velocity += step_duration * pole_angle_acc;
+  world->angular_velocity =
+      clamp(td + (((3 * gravity) / (2 * length)) * sinf(t) +
+                  (3 / (mass * length * length)) * u) *
+                     step_duration,
+            -max_speed, max_speed);
+  world->angle += world->angular_velocity * 0.05f;
 
-  return fabsf(world->pole_angle) < 0.2095f && fabsf(world->x) < 2.4f;
+  return reward;
+}
+
+void init_networks_trainers(pcg32_random_t *rng, NNNetwork *policy_network,
+                            NNNetwork *value_network, NNTrainer *policy_trainer,
+                            NNTrainer *value_trainer) {
+  const unsigned policy_layers[] = {3, 8, 2};
+  init_network(policy_network, ARR_LENGTH(policy_layers), policy_layers);
+  for (unsigned i = 0; i < policy_network->layers_length; i++) {
+    policy_network->layers[i].init_type = NN_HE_INIT;
+  }
+  for (unsigned i = 0; i < policy_network->layers_length - 1; i++) {
+    policy_network->layers[i].activation_type = NN_TANH_ACTIVATION;
+  }
+  init_network_weights(policy_network, rng);
+  {
+    const NNLayer layer =
+        policy_network->layers[policy_network->layers_length - 1];
+    const unsigned parameter_count =
+        layer.input_length * layer.output_length + layer.output_length;
+    NNtype *parameters = layer.weights;
+    for (unsigned parameter_idx = 0; parameter_idx < parameter_count;
+         parameter_idx++) {
+      parameters[parameter_idx] *= 0.01f;
+    }
+  }
+  init_trainer(policy_trainer, policy_network, NN_ADAM_OPTIMIZER);
+  policy_trainer->learning_rate = 0.01f;
+  policy_trainer->clip_limit = 2.0f;
+  policy_trainer->learning_rate_decay = 0.9999f;
+  policy_trainer->learning_rate_min = 0.001f;
+  policy_trainer->adam_damp = 0.999f;
+  policy_trainer->momentum_damp = 0.899f;
+
+  const unsigned value_layers[] = {3, 8, 1};
+  init_network(value_network, ARR_LENGTH(value_layers), value_layers);
+  for (unsigned i = 0; i < value_network->layers_length; i++) {
+    value_network->layers[i].init_type = NN_HE_INIT;
+  }
+  for (unsigned i = 0; i < value_network->layers_length; i++) {
+    value_network->layers[i].activation_type = NN_TANH_ACTIVATION;
+  }
+  init_network_weights(value_network, rng);
+
+  init_trainer(value_trainer, value_network, NN_SGD_OPTIMIZER);
+  value_trainer->learning_rate = 0.04f;
+  value_trainer->clip_limit = 3.0f;
+  value_trainer->learning_rate_decay = 0.996f;
+  value_trainer->learning_rate_min = 0.001f;
+  value_trainer->loss_type = NN_MSE_LOSS;
+
+  printf("policy layers = {");
+  for (unsigned i = 0; i < ARR_LENGTH(policy_layers); i++) {
+    printf("%u", policy_layers[i]);
+    if (i < ARR_LENGTH(policy_layers) - 1)
+      putchar(',');
+  }
+  printf("}\n");
+  printf("value layers  = {");
+  for (unsigned i = 0; i < ARR_LENGTH(value_layers); i++) {
+    printf("%u", value_layers[i]);
+    if (i < ARR_LENGTH(value_layers) - 1)
+      putchar(',');
+  }
+  printf("}\n\n");
 }
 
 int main(void) {
@@ -224,157 +345,101 @@ int main(void) {
   print_array(gae_advantage, ARR_LENGTH(gae_advantage));
 #else
   pcg32_random_t rng;
-  pcg32_srandom_r(&rng, 0, 0);
+  double last_per_seed[10] = {0};
 
-  NNNetwork policy_network = {0};
-  const unsigned policy_layers[] = {4, 8, 2};
-  init_network(&policy_network, ARR_LENGTH(policy_layers), policy_layers);
-  for (unsigned i = 0; i < policy_network.layers_length; i++) {
-    policy_network.layers[i].init_type = NN_HE_INIT;
-  }
-  init_network_weights(&policy_network, &rng);
+  for (unsigned seed = 0; seed < ARR_LENGTH(last_per_seed); seed++) {
+    pcg32_srandom_r(&rng, seed, 0);
 
-  NNTrainer policy_trainer = {0};
-  init_trainer(&policy_trainer, &policy_network, NN_ADAM_OPTIMIZER);
-  policy_trainer.learning_rate = 0.015f;
-  policy_trainer.learning_rate_decay = 0.997f;
-  policy_trainer.learning_rate_min = 3e-4f;
-  policy_trainer.loss_type = NN_CROSS_ENTROPY_LOSS;
+    NNNetwork policy_network = {0};
+    NNNetwork value_network = {0};
+    NNTrainer policy_trainer = {0};
+    NNTrainer value_trainer = {0};
 
-  NNNetwork value_network = {0};
-  const unsigned value_layers[] = {4, 8, 1};
-  init_network(&value_network, ARR_LENGTH(value_layers), value_layers);
-  for (unsigned i = 0; i < value_network.layers_length; i++) {
-    value_network.layers[i].init_type = NN_HE_INIT;
-  }
-  init_network_weights(&value_network, &rng);
+    init_networks_trainers(&rng, &policy_network, &value_network,
+                           &policy_trainer, &value_trainer);
 
-  NNTrainer value_trainer = {0};
-  init_trainer(&value_trainer, &value_network, NN_SGD_OPTIMIZER);
-  value_trainer.learning_rate = 0.05f;
-  value_trainer.loss_type = NN_MSE_LOSS;
-
-  printf("policy layers = {");
-  for (unsigned i = 0; i < ARR_LENGTH(policy_layers); i++) {
-    printf("%u", policy_layers[i]);
-    if (i < ARR_LENGTH(policy_layers) - 1)
-      putchar(',');
-  }
-  printf("}\n");
-  printf("value layers  = {");
-  for (unsigned i = 0; i < ARR_LENGTH(value_layers); i++) {
-    printf("%u", value_layers[i]);
-    if (i < ARR_LENGTH(value_layers) - 1)
-      putchar(',');
-  }
-  printf("}\n\n");
 #define EPISODE_AMOUNT 1000
 #define EPISODE_LENGTH 200
-  NNtype episode_inputs[EPISODE_LENGTH + 1][4];
-  NNtype episode_values[EPISODE_LENGTH + 1];
-  unsigned episode_actions[EPISODE_LENGTH];
-  NNtype episode_rewards[EPISODE_LENGTH];
-  NNtype episode_returns[EPISODE_LENGTH];
-  NNtype episode_advantage[EPISODE_LENGTH];
+    NNtype episode_inputs[EPISODE_LENGTH + 1][3];
+    NNtype episode_values[EPISODE_LENGTH + 1];
+    NNtype episode_actions[EPISODE_LENGTH];
+    NNtype episode_rewards[EPISODE_LENGTH];
+    NNtype episode_returns[EPISODE_LENGTH];
+    NNtype episode_advantage[EPISODE_LENGTH];
 
-  unsigned steps_took = 0;
-  unsigned caps_hit = 0;
-  double value_mean = 0;
-  double value_capped_mean = 0;
+    double avg_reward = 0;
 
-  for (unsigned episode = 0; episode < EPISODE_AMOUNT; episode++) {
-    memset(episode_inputs, 0, sizeof **episode_inputs * EPISODE_LENGTH * 4);
-    memset(episode_actions, 0, sizeof *episode_actions * EPISODE_LENGTH);
-    memset(episode_rewards, 0, sizeof *episode_rewards * EPISODE_LENGTH);
-    memset(episode_returns, 0, sizeof *episode_returns * EPISODE_LENGTH);
+    for (unsigned episode = 0; episode < EPISODE_AMOUNT; episode++) {
+      memset(episode_inputs, 0, sizeof **episode_inputs * EPISODE_LENGTH * 3);
+      memset(episode_actions, 0, sizeof *episode_actions * EPISODE_LENGTH);
+      memset(episode_rewards, 0, sizeof *episode_rewards * EPISODE_LENGTH);
+      memset(episode_returns, 0, sizeof *episode_returns * EPISODE_LENGTH);
 
-    unsigned step = 0;
-    WorldState world = {
-        pcg32_float_range(&rng, -0.05f, 0.05f),
-        pcg32_float_range(&rng, -0.05f, 0.05f),
-        pcg32_float_range(&rng, -0.05f, 0.05f),
-        pcg32_float_range(&rng, -0.05f, 0.05f),
-    };
+      unsigned step = 0;
+      WorldState world = {
+          pcg32_float_range(&rng, -(NNtype)M_PI, (NNtype)M_PI),
+          pcg32_float_range(&rng, -1.0f, 1.0f),
+      };
 
-    bool hit_cap = true; // Whether we hit the episode step cap
-    for (; step < EPISODE_LENGTH; step++) {
-      episode_inputs[step][0] = world.x;
-      episode_inputs[step][1] = world.x_velocity;
-      episode_inputs[step][2] = world.pole_angle;
-      episode_inputs[step][3] = world.pole_angular_velocity;
+      for (; step < EPISODE_LENGTH; step++) {
+        episode_inputs[step][0] = sinf(world.angle);
+        episode_inputs[step][1] = cosf(world.angle);
+        episode_inputs[step][2] = world.angular_velocity;
 
-      calculate_probabilities(episode_inputs[step], &policy_network);
+        NNtype action =
+            get_agent_action(&rng, episode_inputs[step], &policy_network);
 
-      unsigned idx =
-          pcg32_categorical_sample(&rng, policy_network.final_output_length,
-                                   policy_network.final_output);
+        episode_actions[step] = action;
 
-      episode_actions[step] = idx;
+        feed_network(&value_network, episode_inputs[step]);
+        episode_values[step] = value_network.final_output[0];
 
+        const NNtype reward = world_step(&world, action);
+
+        avg_reward += (double)reward;
+
+        episode_rewards[step] = (NNtype)reward;
+      }
+
+      episode_inputs[step][0] = sinf(world.angle);
+      episode_inputs[step][1] = cosf(world.angle);
+      episode_inputs[step][2] = world.angular_velocity;
       feed_network(&value_network, episode_inputs[step]);
       episode_values[step] = value_network.final_output[0];
 
-      if (!world_step(&world, idx)) {
-        hit_cap = false;
-        step += 1;
-        break;
+      calculate_returns(0.9f, step, episode_rewards, episode_returns);
+      calculate_gae(0.9f, 0.5f, step, episode_rewards, episode_values,
+                    episode_advantage);
+
+      value_network_train_step(&value_trainer, step, &episode_inputs[0][0],
+                               episode_returns, episode_advantage);
+
+      reinforce_train_step_continous(&policy_trainer, step,
+                                     &episode_inputs[0][0], episode_advantage,
+                                     episode_actions);
+
+      if (episode % 100 == 99) {
+        avg_reward /= 100;
+        last_per_seed[seed] = avg_reward;
+        printf("The average reward is %g\n", avg_reward);
+        avg_reward = 0;
       }
-
-      const NNtype reward = 1.0f;
-
-      episode_rewards[step] = (NNtype)reward;
     }
-    if (hit_cap) {
-      // save inputs for the next step in the case the pole did not fall and we
-      // just hit the cap.
-      episode_inputs[step][0] = world.x;
-      episode_inputs[step][1] = world.x_velocity;
-      episode_inputs[step][2] = world.pole_angle;
-      episode_inputs[step][3] = world.pole_angular_velocity;
 
-      feed_network(&value_network, episode_inputs[step]);
-      value_capped_mean +=
-          (double)(episode_values[step] = value_network.final_output[0]);
+    free_trainer(&policy_trainer);
+    free_network(&policy_network);
 
-      caps_hit += hit_cap;
-    } else {
-      episode_values[step] = 0;
-    }
-    value_mean += (double)episode_values[0];
-
-    steps_took += step;
-
-    calculate_returns(0.9f, step, episode_rewards, episode_returns);
-    calculate_gae(0.9f, 0.5f, step, episode_rewards, episode_values,
-                  episode_advantage);
-
-    value_network_train_step(&value_trainer, step, &episode_inputs[0][0],
-                             episode_returns, episode_advantage);
-
-    reinforce_train_step(&policy_trainer, step, &episode_inputs[0][0],
-                         episode_advantage, episode_actions);
-
-    if ((episode + 1) % 200 == 0) {
-      printf("Average episode length: %u, current episode (%u)\n",
-             steps_took / 200, episode);
-      printf("Capped episodes: %u\n", caps_hit);
-      printf("mean values[0]: %g\n", value_mean / (double)200);
-      if (caps_hit)
-        printf("capped mean values extra: %g\n",
-               value_capped_mean / (double)caps_hit);
-      steps_took = 0;
-      caps_hit = 0;
-      value_mean = 0;
-      value_capped_mean = 0;
-      putchar('\n');
-    }
+    free_trainer(&value_trainer);
+    free_network(&value_network);
   }
-
-  free_trainer(&policy_trainer);
-  free_network(&policy_network);
-
-  free_trainer(&value_trainer);
-  free_network(&value_network);
+  double overall_avg = 0;
+  printf("\n\nLast 100 episode averages per seed\nseed average\n");
+  for (unsigned seed = 0; seed < ARR_LENGTH(last_per_seed); seed++) {
+    printf("%-4u %g\n", seed, last_per_seed[seed]);
+    overall_avg += last_per_seed[seed];
+  }
+  printf("\nOverall average over %lu seed: %g\n", ARR_LENGTH(last_per_seed),
+         overall_avg / 10);
 #endif
   return 0;
 }

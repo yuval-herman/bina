@@ -31,9 +31,20 @@ build_production() {
 build_experiment() {
   gcc "${common_flags[@]}" \
     -Wno-error=unused-function \
-    -O1 \
-    -fsanitize=address,undefined \
-    -o experiment experiment.c -lm
+    -O2 \
+    -o experiment experiment.c plot.c -lm
+}
+
+build_plotview() {
+  gcc "${common_flags[@]}" \
+    -O2 \
+    -o plotview plotview.c plot.c -lm
+}
+
+build_plot_demo() {
+  gcc "${common_flags[@]}" \
+    -O2 \
+    -o plot-demo plot_demo.c plot.c -lm
 }
 
 run_tests() {
@@ -68,12 +79,20 @@ case "$mode" in
     build_experiment
     ;;
 
+  plotview)
+    build_plotview
+    ;;
+
+  plot-demo)
+    build_plot_demo
+    ;;
+
   test)
     run_tests
     ;;
 
   *)
-    echo "Usage: $0 [debug|prod|experiment|test]"
+    echo "Usage: $0 [debug|prod|experiment|plotview|plot-demo|test]"
     exit 1
     ;;
 esac
