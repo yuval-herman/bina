@@ -1,4 +1,5 @@
 #include "nn.c"
+#include "plot.h"
 
 static void calculate_returns(NNtype discount, unsigned length,
                               const NNtype *rewards, NNtype *returns) {
@@ -231,7 +232,7 @@ static NNtype world_step(WorldState *world, NNtype agent_action) {
 void init_networks_trainers(pcg32_random_t *rng, NNNetwork *policy_network,
                             NNNetwork *value_network, NNTrainer *policy_trainer,
                             NNTrainer *value_trainer) {
-  const unsigned policy_layers[] = {3, 8, 2};
+  const unsigned policy_layers[] = {3, 4, 4, 2};
   init_network(policy_network, ARR_LENGTH(policy_layers), policy_layers);
   for (unsigned i = 0; i < policy_network->layers_length; i++) {
     policy_network->layers[i].init_type = NN_HE_INIT;
@@ -252,28 +253,28 @@ void init_networks_trainers(pcg32_random_t *rng, NNNetwork *policy_network,
     }
   }
   init_trainer(policy_trainer, policy_network, NN_ADAM_OPTIMIZER);
-  policy_trainer->learning_rate = 0.01f;
-  policy_trainer->clip_limit = 2.0f;
-  policy_trainer->learning_rate_decay = 0.9999f;
-  policy_trainer->learning_rate_min = 0.001f;
-  policy_trainer->adam_damp = 0.999f;
-  policy_trainer->momentum_damp = 0.899f;
+  policy_trainer->learning_rate = 0.001f;
+  // policy_trainer->clip_limit = 0.1f;
+  policy_trainer->learning_rate_decay = 0.999f;
+  policy_trainer->learning_rate_min = 1e-5f;
+  // policy_trainer->adam_damp = 0.999f;
+  // policy_trainer->momentum_damp = 0.899f;
 
   const unsigned value_layers[] = {3, 8, 1};
   init_network(value_network, ARR_LENGTH(value_layers), value_layers);
   for (unsigned i = 0; i < value_network->layers_length; i++) {
     value_network->layers[i].init_type = NN_HE_INIT;
   }
-  for (unsigned i = 0; i < value_network->layers_length; i++) {
+  for (unsigned i = 0; i < value_network->layers_length - 1; i++) {
     value_network->layers[i].activation_type = NN_TANH_ACTIVATION;
   }
   init_network_weights(value_network, rng);
 
   init_trainer(value_trainer, value_network, NN_SGD_OPTIMIZER);
-  value_trainer->learning_rate = 0.04f;
-  value_trainer->clip_limit = 3.0f;
-  value_trainer->learning_rate_decay = 0.996f;
-  value_trainer->learning_rate_min = 0.001f;
+  value_trainer->learning_rate = 0.0002f;
+  // value_trainer->clip_limit = 3.0f;
+  value_trainer->learning_rate_decay = 0.9999f;
+  value_trainer->learning_rate_min = 1e-7f;
   value_trainer->loss_type = NN_MSE_LOSS;
 
   printf("policy layers = {");
@@ -292,7 +293,54 @@ void init_networks_trainers(pcg32_random_t *rng, NNNetwork *policy_network,
   printf("}\n\n");
 }
 
-int main(void) {
+double evaluate_policy(NNNetwork *network) {
+  const unsigned episode_length = 200;
+  const unsigned episode_count = 20;
+
+  double avg_reward = 0;
+  for (unsigned i = 0; i < episode_count; i++) {
+    WorldState world = {
+        .angle = (NNtype)(-M_PI + 2 * M_PI * (i + 0.5) / episode_count),
+        .angular_velocity = 0,
+    };
+
+    for (unsigned step = 0; step < episode_length; step++) {
+      NNtype inputs[3];
+      inputs[0] = sinf(world.angle);
+      inputs[1] = cosf(world.angle);
+      inputs[2] = world.angular_velocity;
+
+      feed_network(network, inputs);
+      NNtype action = network->final_output[0];
+
+      const NNtype reward = world_step(&world, action);
+
+      avg_reward += (double)reward;
+    }
+  }
+
+  return avg_reward / episode_count;
+}
+
+int main(int argc, char **argv) {
+  int live_plot = 0;
+  const char *plot_save_path = NULL;
+  for (int arg = 1; arg < argc; arg++) {
+    if (strcmp(argv[arg], "--plot") == 0) {
+      live_plot = 1;
+    } else if (strcmp(argv[arg], "--save-plot") == 0 && arg + 1 < argc) {
+      plot_save_path = argv[++arg];
+    } else if (strcmp(argv[arg], "--help") == 0) {
+      printf("Usage: %s [--plot] [--save-plot FILE]\n", argv[0]);
+      printf("  --plot           Open/update a live gnuplot window\n");
+      printf("  --save-plot FILE Save all seed reward curves after training\n");
+      return 0;
+    } else {
+      fprintf(stderr, "Unknown or incomplete option: %s\n", argv[arg]);
+      fprintf(stderr, "Run %s --help for usage.\n", argv[0]);
+      return 2;
+    }
+  }
 #if 0
 #define print_array(arr, length)                                               \
   putchar('[');                                                                \
@@ -345,7 +393,43 @@ int main(void) {
   print_array(gae_advantage, ARR_LENGTH(gae_advantage));
 #else
   pcg32_random_t rng;
-  double last_per_seed[10] = {0};
+  double last_per_seed[6] = {0};
+
+  char series_name[32];
+
+  Plot *training_plot =
+      plot_create("Pendulum training reward", "Episode", "Mean episode reward");
+  if (training_plot == NULL) {
+    fprintf(stderr, "Could not allocate training plot state.\n");
+    return 1;
+  }
+
+  (void)snprintf(series_name, sizeof series_name, "Average for %lu seeds",
+                 ARR_LENGTH(last_per_seed));
+  PlotSeries *avg_series =
+      plot_add_series(training_plot, series_name, PLOT_LINESPOINTS);
+  if (avg_series == NULL) {
+    fprintf(stderr, "Could not allocate plot series.\n");
+    plot_destroy(training_plot);
+    return 1;
+  }
+
+  PlotSeries *seed_series[ARR_LENGTH(last_per_seed)] = {0};
+  for (unsigned seed = 0; seed < ARR_LENGTH(seed_series); seed++) {
+    char series_name[32];
+    (void)snprintf(series_name, sizeof series_name, "Seed %u", seed);
+    seed_series[seed] =
+        plot_add_series(training_plot, series_name, PLOT_LINESPOINTS);
+    if (seed_series[seed] == NULL) {
+      fprintf(stderr, "Could not allocate plot series.\n");
+      plot_destroy(training_plot);
+      return 1;
+    }
+  }
+  if (live_plot && plot_show(training_plot) != 0) {
+    fprintf(stderr, "Continuing training without a live plot.\n");
+    live_plot = 0;
+  }
 
   for (unsigned seed = 0; seed < ARR_LENGTH(last_per_seed); seed++) {
     pcg32_srandom_r(&rng, seed, 0);
@@ -358,7 +442,7 @@ int main(void) {
     init_networks_trainers(&rng, &policy_network, &value_network,
                            &policy_trainer, &value_trainer);
 
-#define EPISODE_AMOUNT 1000
+#define EPISODE_AMOUNT 6000
 #define EPISODE_LENGTH 200
     NNtype episode_inputs[EPISODE_LENGTH + 1][3];
     NNtype episode_values[EPISODE_LENGTH + 1];
@@ -366,8 +450,6 @@ int main(void) {
     NNtype episode_rewards[EPISODE_LENGTH];
     NNtype episode_returns[EPISODE_LENGTH];
     NNtype episode_advantage[EPISODE_LENGTH];
-
-    double avg_reward = 0;
 
     for (unsigned episode = 0; episode < EPISODE_AMOUNT; episode++) {
       memset(episode_inputs, 0, sizeof **episode_inputs * EPISODE_LENGTH * 3);
@@ -396,8 +478,6 @@ int main(void) {
 
         const NNtype reward = world_step(&world, action);
 
-        avg_reward += (double)reward;
-
         episode_rewards[step] = (NNtype)reward;
       }
 
@@ -407,7 +487,7 @@ int main(void) {
       feed_network(&value_network, episode_inputs[step]);
       episode_values[step] = value_network.final_output[0];
 
-      calculate_returns(0.9f, step, episode_rewards, episode_returns);
+      calculate_returns(0.99f, step, episode_rewards, episode_returns);
       calculate_gae(0.9f, 0.5f, step, episode_rewards, episode_values,
                     episode_advantage);
 
@@ -419,10 +499,29 @@ int main(void) {
                                      episode_actions);
 
       if (episode % 100 == 99) {
-        avg_reward /= 100;
+        const double avg_reward = evaluate_policy(&policy_network);
         last_per_seed[seed] = avg_reward;
-        printf("The average reward is %g\n", avg_reward);
-        avg_reward = 0;
+        double prev_y =
+            plot_series_get_y(training_plot, avg_series, episode / 100);
+        if (isnan(prev_y)) {
+          if (plot_series_add(training_plot, avg_series, (double)(episode + 1),
+                              avg_reward) != 0) {
+            fprintf(stderr, "Could not append training plot data.\n");
+          }
+        } else {
+          prev_y = (prev_y * (seed + 1) + avg_reward) / (seed + 2);
+          plot_series_set(training_plot, avg_series, episode / 100,
+                          (double)(episode + 1), prev_y);
+        }
+        if (plot_series_add(training_plot, seed_series[seed],
+                            (double)(episode + 1), avg_reward) != 0) {
+          fprintf(stderr, "Could not append training plot data.\n");
+        }
+        if (live_plot && plot_refresh(training_plot) != 0) {
+          fprintf(stderr,
+                  "Live plotting failed; continuing without updates.\n");
+          live_plot = 0;
+        }
       }
     }
 
@@ -432,14 +531,26 @@ int main(void) {
     free_trainer(&value_trainer);
     free_network(&value_network);
   }
+
   double overall_avg = 0;
+  if (plot_save_path != NULL && plot_save_path[0] != '\0') {
+    if (plot_save(training_plot, plot_save_path) != 0) {
+      fprintf(stderr, "Failed to save plot state to '%s'.\n", plot_save_path);
+      plot_destroy(training_plot);
+      return 1;
+    }
+    printf("Saved training plot to %s\n", plot_save_path);
+  }
+  plot_destroy(training_plot);
+
   printf("\n\nLast 100 episode averages per seed\nseed average\n");
   for (unsigned seed = 0; seed < ARR_LENGTH(last_per_seed); seed++) {
     printf("%-4u %g\n", seed, last_per_seed[seed]);
     overall_avg += last_per_seed[seed];
   }
-  printf("\nOverall average over %lu seed: %g\n", ARR_LENGTH(last_per_seed),
-         overall_avg / 10);
+  overall_avg /= (double)ARR_LENGTH(last_per_seed);
+  printf("\nOverall average over %lu seeds: %g\n", ARR_LENGTH(last_per_seed),
+         overall_avg);
 #endif
   return 0;
 }
