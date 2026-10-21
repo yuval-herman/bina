@@ -219,20 +219,6 @@ typedef struct {
   NNtype angular_velocity;
 } WorldState;
 
-static inline NNtype clamp(NNtype value, NNtype min, NNtype max) {
-  return (value < min) ? min : ((value > max) ? max : value);
-}
-
-static inline NNtype wrap(NNtype value, NNtype min, NNtype max) {
-  const NNtype range = max - min;
-  const NNtype inv_range = 1.0f / range;
-
-  const NNtype t = (value - min) * inv_range;
-  const NNtype wrapped_t = t - floorf(t);
-
-  return wrapped_t * range + min;
-}
-
 // Returns the reward. Agent action is the torque.
 static NNtype world_step(WorldState *world, NNtype agent_action) {
   assert(world);

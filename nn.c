@@ -220,6 +220,20 @@ static inline void pcg32_shuffle_index_array(pcg32_random_t *rng,
 }
 // ================ PCG ================
 
+static inline NNtype clamp(NNtype value, NNtype min, NNtype max) {
+  return (value < min) ? min : ((value > max) ? max : value);
+}
+
+static inline NNtype wrap(NNtype value, NNtype min, NNtype max) {
+  const NNtype range = max - min;
+  const NNtype inv_range = 1.0f / range;
+
+  const NNtype t = (value - min) * inv_range;
+  const NNtype wrapped_t = t - floorf(t);
+
+  return wrapped_t * range + min;
+}
+
 static inline NNtype *get_weight(NNLayer *layer, unsigned output_idx,
                                  unsigned weight_idx) {
   return layer->weights + output_idx * layer->input_length + weight_idx;
