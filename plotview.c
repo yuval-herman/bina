@@ -29,6 +29,7 @@ static void wait_for_windows_to_close(void) {
 
 int main(int argc, char **argv) {
   int individual = 0;
+  int individual_shared = 0;
   int select_subplot = 0;
   size_t row = 0;
   size_t column = 0;
@@ -38,6 +39,7 @@ int main(int argc, char **argv) {
     printf("Usage:\n");
     printf("  %s FILE.cplot\n", argv[0]);
     printf("  %s --individual FILE.cplot\n", argv[0]);
+    printf("  %s --individual-shared FILE.cplot\n", argv[0]);
     printf("  %s --subplot ROW COL FILE.cplot\n", argv[0]);
     printf("ROW and COL are 1-based for --subplot.\n");
     return 0;
@@ -46,6 +48,9 @@ int main(int argc, char **argv) {
     path = argv[1];
   } else if (argc == 3 && strcmp(argv[1], "--individual") == 0) {
     individual = 1;
+    path = argv[2];
+  } else if (argc == 3 && strcmp(argv[1], "--individual-shared") == 0) {
+    individual_shared = 1;
     path = argv[2];
   } else if (argc == 5 && strcmp(argv[1], "--subplot") == 0) {
     select_subplot = 1;
@@ -59,7 +64,8 @@ int main(int argc, char **argv) {
     path = argv[4];
   } else {
     fprintf(stderr,
-            "Usage: %s [--individual | --subplot ROW COL] FILE.cplot\n",
+            "Usage: %s [--individual | --individual-shared | "
+            "--subplot ROW COL] FILE.cplot\n",
             argv[0]);
     return 2;
   }
@@ -92,19 +98,22 @@ int main(int argc, char **argv) {
         return 2;
       }
       status = plot_show(plot);
+    } else if (individual_shared) {
+      status = plot_multi_show_individual_shared(multi);
     } else if (individual) {
       status = plot_multi_show_individual(multi);
     } else {
       status = plot_multi_show(multi);
     }
 
-    if (status == 0 && (individual || select_subplot))
+    if (status == 0 && (individual || individual_shared || select_subplot))
       wait_for_windows_to_close();
     plot_multi_destroy(multi);
     return status == 0 ? 0 : 1;
   }
 
-  if (strcmp(magic, "CPLOT") == 0 && !select_subplot && !individual) {
+  if (strcmp(magic, "CPLOT") == 0 && !select_subplot && !individual &&
+      !individual_shared) {
     Plot *plot = plot_load(path);
     if (plot == NULL)
       return 1;
@@ -113,10 +122,10 @@ int main(int argc, char **argv) {
     return status == 0 ? 0 : 1;
   }
 
-  if (select_subplot || individual) {
+  if (select_subplot || individual || individual_shared) {
     fprintf(stderr,
-            "plotview: --individual and --subplot require a multiplot state "
-            "file.\n");
+            "plotview: --individual, --individual-shared, and --subplot "
+            "require a multiplot state file.\n");
     return 2;
   }
 

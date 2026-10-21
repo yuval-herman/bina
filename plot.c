@@ -411,6 +411,53 @@ static int send_plot_commands_to(FILE *out, const Plot *plot,
   return fprintf(out, "\n") < 0 ? -1 : 0;
 }
 
+/*
+ * Qt and X11 preserve the plot's original aspect ratio when a window is
+ * resized unless replotonresize is enabled. Set it only on terminals that
+ * support that option. Each Plot process gets its own terminal context, so
+ * this also ensures that a resize uses that plot's current data and ranges.
+ */
+static int send_single_terminal_setup(FILE *out, const Plot *plot) {
+  if (fprintf(out,
+              "set macros\n"
+              "cplot_terminal = GPVAL_TERM\n"
+              "if (GPVAL_TERM eq \"qt\") {\n"
+              "  set term @cplot_terminal title ") < 0 ||
+      write_gp_quoted(out, plot->title) != 0 ||
+      fprintf(out,
+              " replotonresize\n"
+              "}\n"
+              "if (GPVAL_TERM eq \"x11\") {\n"
+              "  set term @cplot_terminal title ") < 0 ||
+      write_gp_quoted(out, plot->title) != 0 ||
+      fprintf(out, " replotonresize\n}\n") < 0 || fflush(out) != 0)
+    return -1;
+  return 0;
+}
+
+/* Select a numbered terminal window, enabling resize-replot where available. */
+static int send_numbered_terminal_setup(FILE *out, size_t window,
+                                        const Plot *plot) {
+  if (fprintf(out,
+              "if (GPVAL_TERM eq \"qt\") {\n"
+              "  set term @cplot_terminal %zu title ", window) < 0 ||
+      write_gp_quoted(out, plot->title) != 0 ||
+      fprintf(out,
+              " replotonresize\n"
+              "}\n"
+              "if (GPVAL_TERM eq \"x11\") {\n"
+              "  set term @cplot_terminal %zu title ", window) < 0 ||
+      write_gp_quoted(out, plot->title) != 0 ||
+      fprintf(out,
+              " replotonresize\n"
+              "}\n"
+              "if (GPVAL_TERM ne \"qt\" && GPVAL_TERM ne \"x11\") {\n"
+              "  set term @cplot_terminal %zu\n"
+              "}\n", window) < 0)
+    return -1;
+  return 0;
+}
+
 static int send_plot_commands(Plot *plot) {
   if (send_plot_commands_to(plot->gnuplot, plot, 1) != 0)
     return -1;
@@ -480,7 +527,7 @@ static int start_multi_gnuplot(PlotMulti *multi) {
   return 0;
 }
 
-static int send_individual_commands(PlotMulti *multi) {
+static int send_individual_commands_shared(PlotMulti *multi) {
   FILE *out = multi->gnuplot;
   const size_t count = multi->rows * multi->columns;
   for (size_t i = 0; i < count; i++) {
@@ -488,7 +535,7 @@ static int send_individual_commands(PlotMulti *multi) {
     if (plot == NULL)
       continue;
     /* Keep window IDs stable even if some grid cells are empty. */
-    if (fprintf(out, "set term @cplot_terminal %zu\n", i + 1) < 0 ||
+    if (send_numbered_terminal_setup(out, i + 1, plot) != 0 ||
         send_plot_commands_to(out, plot, 1) != 0)
       return -1;
   }
@@ -503,7 +550,7 @@ static int refresh_shared_multi(PlotMulti *multi) {
     return -1;
   }
   if (multi->individual_windows_shown &&
-      send_individual_commands(multi) != 0) {
+      send_individual_commands_shared(multi) != 0) {
     fprintf(stderr, "cplot: failed to refresh individual plot windows.\n");
     return -1;
   }
@@ -533,7 +580,8 @@ int plot_show(Plot *plot) {
     fprintf(stderr, "cplot: could not start gnuplot: %s\n", strerror(errno));
     return -1;
   }
-  if (send_plot_commands(plot) != 0) {
+  if (send_single_terminal_setup(plot->gnuplot, plot) != 0 ||
+      send_plot_commands(plot) != 0) {
     fprintf(stderr, "cplot: failed to send commands to gnuplot.\n");
     (void)pclose(plot->gnuplot);
     plot->gnuplot = NULL;
@@ -648,11 +696,61 @@ int plot_multi_show(PlotMulti *multi) {
 int plot_multi_show_individual(PlotMulti *multi) {
   if (multi == NULL)
     return -1;
+  if (multi->individual_windows_shown) {
+    fprintf(stderr,
+            "cplot: this multiplot already uses shared-process individual "
+            "windows; create a new PlotMulti to use per-window processes.\n");
+    return -1;
+  }
   if (!plot_is_available()) {
     fprintf(stderr,
             "cplot: gnuplot was not found in PATH; cannot open individual "
             "plot windows.\n");
     return -1;
+  }
+
+  /*
+   * Each window gets its own gnuplot process. Gnuplot 6.0 keeps one active
+   * terminal/plot context per process, so numbered windows from a shared
+   * process cannot all provide reliable mouse zoom at once.
+   */
+  const size_t count = multi->rows * multi->columns;
+  int opened_any = 0;
+  for (size_t i = 0; i < count; i++) {
+    Plot *plot = multi->plots[i];
+    if (plot == NULL)
+      continue;
+    if (plot_show(plot) != 0) {
+      fprintf(stderr, "cplot: failed to open subplot at row %zu, column %zu.\n",
+              i / multi->columns + 1, i % multi->columns + 1);
+      return -1;
+    }
+    opened_any = 1;
+  }
+  if (!opened_any) {
+    fprintf(stderr, "cplot: multiplot has no populated panels.\n");
+    return -1;
+  }
+  return 0;
+}
+
+int plot_multi_show_individual_shared(PlotMulti *multi) {
+  if (multi == NULL)
+    return -1;
+  if (!plot_is_available()) {
+    fprintf(stderr,
+            "cplot: gnuplot was not found in PATH; cannot open individual "
+            "plot windows.\n");
+    return -1;
+  }
+  const size_t count = multi->rows * multi->columns;
+  for (size_t i = 0; i < count; i++) {
+    if (multi->plots[i] != NULL && multi->plots[i]->gnuplot != NULL) {
+      fprintf(stderr,
+              "cplot: cannot switch to shared-window mode after a subplot "
+              "has already opened its own gnuplot process.\n");
+      return -1;
+    }
   }
   if (write_all_multi_data(multi) != 0 || start_multi_gnuplot(multi) != 0)
     return -1;

@@ -63,13 +63,19 @@ Plot *plot_multi_add(PlotMulti *multi, size_t row, size_t column,
                      const char *y_label);
 Plot *plot_multi_get(PlotMulti *multi, size_t row, size_t column);
 int plot_multi_show(PlotMulti *multi);
-/* Opens each populated subplot in its own interactive gnuplot window.
- * All windows share the PlotMulti's single gnuplot process and use numbered
- * windows in the active interactive terminal. Unlike multiplot mode, each
- * window supports normal mouse zoom and terminal resize behavior.
- * plot_multi_refresh() updates the grid and/or the individual windows shown.
+/*
+ * Opens each populated subplot in its own gnuplot process/window. This gives
+ * every window an independent mouse/zoom context. Qt and X11 windows enable
+ * replot-on-resize so the graph uses the resized window's full area.
+ * plot_multi_refresh() updates these windows and any separately shown grid.
  */
 int plot_multi_show_individual(PlotMulti *multi);
+/*
+ * Alternative: open numbered windows in one shared gnuplot process. This is
+ * lighter-weight, but gnuplot 6.0 has one active mouse/zoom plot context per
+ * process, so independent mouse zoom is not reliable in every window.
+ */
+int plot_multi_show_individual_shared(PlotMulti *multi);
 int plot_multi_refresh(PlotMulti *multi);
 int plot_multi_save(const PlotMulti *multi, const char *path);
 PlotMulti *plot_multi_load(const char *path);
