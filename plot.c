@@ -38,6 +38,16 @@ struct Plot {
   FILE *gnuplot;
 };
 
+struct PlotMulti {
+  char *title;
+  size_t rows;
+  size_t columns;
+  Plot **plots;
+  FILE *gnuplot;
+  int grid_shown;
+  int individual_windows_shown;
+};
+
 static char *copy_string(const char *value) {
   if (value == NULL)
     value = "";
@@ -347,38 +357,157 @@ static int write_gp_quoted(FILE *file, const char *value) {
   return write_quoted(file, value);
 }
 
-static int send_plot_commands(Plot *plot) {
-  FILE *out = plot->gnuplot;
+static const char *gnuplot_style(PlotStyle style) {
+  switch (style) {
+  case PLOT_POINTS:
+    return "points";
+  case PLOT_LINESPOINTS:
+    return "linespoints";
+  case PLOT_IMPULSES:
+    return "impulses";
+  case PLOT_LINES:
+  default:
+    return "lines";
+  }
+}
+
+static int send_plot_commands_to(FILE *out, const Plot *plot,
+                                 int key_outside) {
   if (fprintf(out, "set title ") < 0 ||
       write_gp_quoted(out, plot->title) != 0 ||
       fprintf(out, "\nset xlabel ") < 0 ||
       write_gp_quoted(out, plot->x_label) != 0 ||
       fprintf(out, "\nset ylabel ") < 0 ||
       write_gp_quoted(out, plot->y_label) != 0 ||
-      fprintf(out, "\nset grid\nset key outside\nplot ") < 0)
+      fprintf(out, "\nset grid\n") < 0)
     return -1;
 
   if (plot->series_length == 0) {
-    if (fprintf(out, "NaN notitle") < 0)
+    if (fprintf(out, "unset key\nplot NaN notitle\n") < 0)
       return -1;
+    return 0;
   }
 
+  if (fprintf(out, "set key %s\nplot ",
+              key_outside ? "outside" : "top right") < 0)
+    return -1;
   for (size_t i = 0; i < plot->series_length; i++) {
-    PlotSeries *series = plot->series[i];
+    const PlotSeries *series = plot->series[i];
     if (i != 0 && fprintf(out, ", \\\n     ") < 0)
       return -1;
-    if (write_gp_quoted(out, series->data_path) != 0 ||
-        fprintf(out, " using 1:2 with %s title ",
-                series->style == PLOT_POINTS
-                    ? "points"
-                    : (series->style == PLOT_LINESPOINTS
-                           ? "linespoints"
-                           : (series->style == PLOT_IMPULSES ? "impulses"
-                                                             : "lines"))) < 0 ||
-        write_gp_quoted(out, series->name) != 0)
+    if (series->data_path == NULL ||
+        write_gp_quoted(out, series->data_path) != 0 ||
+        fprintf(out, " using 1:2 with %s",
+                gnuplot_style(series->style)) < 0)
+      return -1;
+    if (series->name[0] == '\0') {
+      if (fprintf(out, " notitle") < 0)
+        return -1;
+    } else if (fprintf(out, " title ") < 0 ||
+               write_gp_quoted(out, series->name) != 0) {
+      return -1;
+    }
+  }
+  return fprintf(out, "\n") < 0 ? -1 : 0;
+}
+
+static int send_plot_commands(Plot *plot) {
+  if (send_plot_commands_to(plot->gnuplot, plot, 1) != 0)
+    return -1;
+  return fflush(plot->gnuplot) != 0 ? -1 : 0;
+}
+
+static int write_all_plot_data(Plot *plot) {
+  for (size_t i = 0; i < plot->series_length; i++) {
+    if (write_series_data(plot->series[i]) != 0) {
+      fprintf(stderr, "cplot: could not write plot data: %s\n",
+              strerror(errno));
+      return -1;
+    }
+  }
+  return 0;
+}
+
+static int write_all_multi_data(PlotMulti *multi);
+
+static int send_multiplot_commands(PlotMulti *multi) {
+  FILE *out = multi->gnuplot;
+  /* Window 0 is reserved for the overview grid. */
+  if (fprintf(out, "set term @cplot_terminal 0\n"
+                   "set multiplot layout %zu,%zu rowsfirst title ",
+              multi->rows, multi->columns) < 0 ||
+      write_gp_quoted(out, multi->title) != 0 || fprintf(out, "\n") < 0)
+    return -1;
+
+  const size_t count = multi->rows * multi->columns;
+  for (size_t i = 0; i < count; i++) {
+    const Plot *plot = multi->plots[i];
+    if (plot != NULL) {
+      if (send_plot_commands_to(out, plot, 0) != 0)
+        return -1;
+    } else if (fprintf(out,
+                       "set title \"\"\nunset key\nset xlabel \"\"\n"
+                       "set ylabel \"\"\nset grid\nplot NaN notitle\n") < 0) {
+      return -1;
+    }
+  }
+  if (fprintf(out, "unset multiplot\n") < 0 || fflush(out) != 0)
+    return -1;
+  return 0;
+}
+
+/*
+ * Numbered interactive-terminal windows let one gnuplot process serve every
+ * panel. The terminal name is captured before switching to numbered windows;
+ * the default terminal is window 0 and child panels use window index + 1.
+ */
+static int start_multi_gnuplot(PlotMulti *multi) {
+  if (multi->gnuplot != NULL)
+    return 0;
+  multi->gnuplot = popen("gnuplot -persist", "w");
+  if (multi->gnuplot == NULL) {
+    fprintf(stderr, "cplot: could not start gnuplot: %s\n", strerror(errno));
+    return -1;
+  }
+  if (fprintf(multi->gnuplot,
+              "set macros\ncplot_terminal = GPVAL_TERM\n") < 0 ||
+      fflush(multi->gnuplot) != 0) {
+    fprintf(stderr, "cplot: could not initialize gnuplot terminal selection.\n");
+    (void)pclose(multi->gnuplot);
+    multi->gnuplot = NULL;
+    return -1;
+  }
+  return 0;
+}
+
+static int send_individual_commands(PlotMulti *multi) {
+  FILE *out = multi->gnuplot;
+  const size_t count = multi->rows * multi->columns;
+  for (size_t i = 0; i < count; i++) {
+    Plot *plot = multi->plots[i];
+    if (plot == NULL)
+      continue;
+    /* Keep window IDs stable even if some grid cells are empty. */
+    if (fprintf(out, "set term @cplot_terminal %zu\n", i + 1) < 0 ||
+        send_plot_commands_to(out, plot, 1) != 0)
       return -1;
   }
-  return fprintf(out, "\n") < 0 || fflush(out) != 0 ? -1 : 0;
+  return fflush(out) != 0 ? -1 : 0;
+}
+
+static int refresh_shared_multi(PlotMulti *multi) {
+  if (write_all_multi_data(multi) != 0)
+    return -1;
+  if (multi->grid_shown && send_multiplot_commands(multi) != 0) {
+    fprintf(stderr, "cplot: failed to refresh multiplot window.\n");
+    return -1;
+  }
+  if (multi->individual_windows_shown &&
+      send_individual_commands(multi) != 0) {
+    fprintf(stderr, "cplot: failed to refresh individual plot windows.\n");
+    return -1;
+  }
+  return 0;
 }
 
 int plot_show(Plot *plot) {
@@ -432,6 +561,168 @@ int plot_refresh(Plot *plot) {
   return 0;
 }
 
+
+PlotMulti *plot_multi_create(const char *title, size_t rows, size_t columns) {
+  if (rows == 0 || columns == 0 || rows > SIZE_MAX / columns)
+    return NULL;
+  const size_t count = rows * columns;
+  if (count > SIZE_MAX / sizeof(Plot *))
+    return NULL;
+
+  PlotMulti *multi = calloc(1, sizeof *multi);
+  if (multi == NULL)
+    return NULL;
+  multi->title = copy_string(title);
+  multi->plots = calloc(count, sizeof *multi->plots);
+  if (multi->title == NULL || multi->plots == NULL) {
+    free(multi->title);
+    free(multi->plots);
+    free(multi);
+    return NULL;
+  }
+  multi->rows = rows;
+  multi->columns = columns;
+  return multi;
+}
+
+void plot_multi_destroy(PlotMulti *multi) {
+  if (multi == NULL)
+    return;
+  if (multi->gnuplot != NULL) {
+    (void)fflush(multi->gnuplot);
+    (void)pclose(multi->gnuplot);
+  }
+  const size_t count = multi->rows * multi->columns;
+  for (size_t i = 0; i < count; i++)
+    plot_destroy(multi->plots[i]);
+  free(multi->plots);
+  free(multi->title);
+  free(multi);
+}
+
+Plot *plot_multi_add(PlotMulti *multi, size_t row, size_t column,
+                     const char *title, const char *x_label,
+                     const char *y_label) {
+  if (multi == NULL || row >= multi->rows || column >= multi->columns)
+    return NULL;
+  const size_t index = row * multi->columns + column;
+  if (multi->plots[index] != NULL)
+    return NULL;
+  Plot *plot = plot_create(title, x_label, y_label);
+  if (plot == NULL)
+    return NULL;
+  multi->plots[index] = plot;
+  return plot;
+}
+
+Plot *plot_multi_get(PlotMulti *multi, size_t row, size_t column) {
+  if (multi == NULL || row >= multi->rows || column >= multi->columns)
+    return NULL;
+  return multi->plots[row * multi->columns + column];
+}
+
+static int write_all_multi_data(PlotMulti *multi) {
+  const size_t count = multi->rows * multi->columns;
+  for (size_t i = 0; i < count; i++) {
+    if (multi->plots[i] != NULL && write_all_plot_data(multi->plots[i]) != 0)
+      return -1;
+  }
+  return 0;
+}
+
+int plot_multi_show(PlotMulti *multi) {
+  if (multi == NULL)
+    return -1;
+  if (!plot_is_available()) {
+    fprintf(stderr,
+            "cplot: gnuplot was not found in PATH; install gnuplot or save "
+            "the multiplot with plot_multi_save().\n");
+    return -1;
+  }
+  if (write_all_multi_data(multi) != 0 || start_multi_gnuplot(multi) != 0)
+    return -1;
+  multi->grid_shown = 1;
+  return refresh_shared_multi(multi);
+}
+
+int plot_multi_show_individual(PlotMulti *multi) {
+  if (multi == NULL)
+    return -1;
+  if (!plot_is_available()) {
+    fprintf(stderr,
+            "cplot: gnuplot was not found in PATH; cannot open individual "
+            "plot windows.\n");
+    return -1;
+  }
+  if (write_all_multi_data(multi) != 0 || start_multi_gnuplot(multi) != 0)
+    return -1;
+  multi->individual_windows_shown = 1;
+  return refresh_shared_multi(multi);
+}
+
+int plot_multi_refresh(PlotMulti *multi) {
+  if (multi == NULL)
+    return -1;
+
+  const size_t count = multi->rows * multi->columns;
+  int has_independent_child_windows = 0;
+  for (size_t i = 0; i < count; i++) {
+    if (multi->plots[i] != NULL && multi->plots[i]->gnuplot != NULL) {
+      has_independent_child_windows = 1;
+      break;
+    }
+  }
+
+  /* Match the original API: refresh on a never-shown grid opens its overview. */
+  if (multi->gnuplot == NULL && !has_independent_child_windows)
+    return plot_multi_show(multi);
+
+  if (multi->gnuplot != NULL) {
+    if (!multi->grid_shown && !multi->individual_windows_shown)
+      multi->grid_shown = 1;
+    if (refresh_shared_multi(multi) != 0)
+      return -1;
+  } else if (write_all_multi_data(multi) != 0) {
+    return -1;
+  }
+
+  /* Preserve support for callers that show a child Plot directly. */
+  for (size_t i = 0; i < count; i++) {
+    Plot *plot = multi->plots[i];
+    if (plot != NULL && plot->gnuplot != NULL &&
+        send_plot_commands(plot) != 0) {
+      fprintf(stderr, "cplot: failed to refresh an independently opened subplot.\n");
+      return -1;
+    }
+  }
+  return 0;
+}
+
+static int write_plot_contents(FILE *file, const Plot *plot,
+                               const char *terminator) {
+  if (fprintf(file, "TITLE ") < 0 || write_quoted(file, plot->title) != 0 ||
+      fprintf(file, "\nXLABEL ") < 0 ||
+      write_quoted(file, plot->x_label) != 0 ||
+      fprintf(file, "\nYLABEL ") < 0 ||
+      write_quoted(file, plot->y_label) != 0 || fputc('\n', file) == EOF)
+    return -1;
+
+  for (size_t i = 0; i < plot->series_length; i++) {
+    const PlotSeries *series = plot->series[i];
+    if (fprintf(file, "SERIES ") < 0 ||
+        write_quoted(file, series->name) != 0 ||
+        fprintf(file, " %u %zu\n", (unsigned)series->style,
+                series->length) < 0)
+      return -1;
+    for (size_t j = 0; j < series->length; j++) {
+      if (fprintf(file, "%.17g %.17g\n", series->points[j].x,
+                  series->points[j].y) < 0)
+        return -1;
+    }
+  }
+  return fprintf(file, "%s\n", terminator) < 0 ? -1 : 0;
+}
+
 int plot_save(const Plot *plot, const char *path) {
   if (plot == NULL || path == NULL || path[0] == '\0')
     return -1;
@@ -440,22 +731,37 @@ int plot_save(const Plot *plot, const char *path) {
     fprintf(stderr, "cplot: cannot save '%s': %s\n", path, strerror(errno));
     return -1;
   }
-  int failed =
-      fprintf(file, "CPLOT 1\nTITLE ") < 0 ||
-      write_quoted(file, plot->title) != 0 || fprintf(file, "\nXLABEL ") < 0 ||
-      write_quoted(file, plot->x_label) != 0 ||
-      fprintf(file, "\nYLABEL ") < 0 ||
-      write_quoted(file, plot->y_label) != 0 || fputc('\n', file) == EOF;
+  int failed = fprintf(file, "CPLOT 1\n") < 0 ||
+               write_plot_contents(file, plot, "END") != 0;
+  if (fclose(file) != 0)
+    failed = 1;
+  if (failed)
+    fprintf(stderr, "cplot: error while writing '%s'.\n", path);
+  return failed ? -1 : 0;
+}
 
-  for (size_t i = 0; !failed && i < plot->series_length; i++) {
-    const PlotSeries *series = plot->series[i];
-    failed =
-        fprintf(file, "SERIES ") < 0 || write_quoted(file, series->name) != 0 ||
-        fprintf(file, " %u %zu\n", (unsigned)series->style, series->length) < 0;
-    for (size_t j = 0; !failed && j < series->length; j++) {
-      failed = fprintf(file, "%.17g %.17g\n", series->points[j].x,
-                       series->points[j].y) < 0;
+int plot_multi_save(const PlotMulti *multi, const char *path) {
+  if (multi == NULL || path == NULL || path[0] == '\0')
+    return -1;
+  FILE *file = fopen(path, "w");
+  if (file == NULL) {
+    fprintf(stderr, "cplot: cannot save '%s': %s\n", path, strerror(errno));
+    return -1;
+  }
+
+  int failed = fprintf(file, "CPLOTMULTI 1\nTITLE ") < 0 ||
+               write_quoted(file, multi->title) != 0 ||
+               fprintf(file, "\nGRID %zu %zu\n", multi->rows,
+                       multi->columns) < 0;
+  const size_t count = multi->rows * multi->columns;
+  for (size_t i = 0; !failed && i < count; i++) {
+    const Plot *plot = multi->plots[i];
+    if (plot == NULL) {
+      failed = fprintf(file, "EMPTY\n") < 0;
+      continue;
     }
+    failed = fprintf(file, "PLOT\n") < 0 ||
+             write_plot_contents(file, plot, "ENDPLOT") != 0;
   }
   if (!failed && fprintf(file, "END\n") < 0)
     failed = 1;
@@ -546,35 +852,21 @@ static char *read_quoted(FILE *file) {
   return value;
 }
 
-Plot *plot_load(const char *path) {
-  if (path == NULL || path[0] == '\0')
-    return NULL;
-  FILE *file = fopen(path, "r");
-  if (file == NULL) {
-    fprintf(stderr, "cplot: cannot open '%s': %s\n", path, strerror(errno));
-    return NULL;
-  }
-
-  char magic[16];
-  unsigned version;
-  if (fscanf(file, "%15s %u", magic, &version) != 2 ||
-      strcmp(magic, "CPLOT") != 0 || version != 1) {
-    fprintf(stderr, "cplot: '%s' is not a supported cplot state file.\n", path);
-    (void)fclose(file);
-    return NULL;
-  }
-
+static Plot *read_plot_contents(FILE *file, const char *terminator,
+                                const char *path) {
   char key[32];
   char *title = NULL;
   char *x_label = NULL;
   char *y_label = NULL;
   Plot *plot = NULL;
+
   if (fscanf(file, "%31s", key) != 1 || strcmp(key, "TITLE") != 0 ||
-      (title = read_quoted(file)) == NULL || fscanf(file, "%31s", key) != 1 ||
-      strcmp(key, "XLABEL") != 0 || (x_label = read_quoted(file)) == NULL ||
+      (title = read_quoted(file)) == NULL ||
+      fscanf(file, "%31s", key) != 1 || strcmp(key, "XLABEL") != 0 ||
+      (x_label = read_quoted(file)) == NULL ||
       fscanf(file, "%31s", key) != 1 || strcmp(key, "YLABEL") != 0 ||
       (y_label = read_quoted(file)) == NULL) {
-    fprintf(stderr, "cplot: malformed metadata in '%s'.\n", path);
+    fprintf(stderr, "cplot: malformed plot metadata in '%s'.\n", path);
     goto cleanup;
   }
 
@@ -589,7 +881,7 @@ Plot *plot_load(const char *path) {
       plot = NULL;
       goto cleanup;
     }
-    if (strcmp(key, "END") == 0)
+    if (strcmp(key, terminator) == 0)
       break;
     if (strcmp(key, "SERIES") != 0) {
       fprintf(stderr, "cplot: unexpected token in '%s'.\n", path);
@@ -633,6 +925,101 @@ cleanup:
   free(title);
   free(x_label);
   free(y_label);
+  return plot;
+}
+
+Plot *plot_load(const char *path) {
+  if (path == NULL || path[0] == '\0')
+    return NULL;
+  FILE *file = fopen(path, "r");
+  if (file == NULL) {
+    fprintf(stderr, "cplot: cannot open '%s': %s\n", path, strerror(errno));
+    return NULL;
+  }
+
+  char magic[16];
+  unsigned version;
+  if (fscanf(file, "%15s %u", magic, &version) != 2 ||
+      strcmp(magic, "CPLOT") != 0 || version != 1) {
+    fprintf(stderr, "cplot: '%s' is not a supported cplot state file.\n", path);
+    (void)fclose(file);
+    return NULL;
+  }
+
+  Plot *plot = read_plot_contents(file, "END", path);
   (void)fclose(file);
   return plot;
+}
+
+PlotMulti *plot_multi_load(const char *path) {
+  if (path == NULL || path[0] == '\0')
+    return NULL;
+  FILE *file = fopen(path, "r");
+  if (file == NULL) {
+    fprintf(stderr, "cplot: cannot open '%s': %s\n", path, strerror(errno));
+    return NULL;
+  }
+
+  char magic[16];
+  char key[32];
+  unsigned version;
+  char *title = NULL;
+  PlotMulti *multi = NULL;
+  if (fscanf(file, "%15s %u", magic, &version) != 2 ||
+      strcmp(magic, "CPLOTMULTI") != 0 || version != 1 ||
+      fscanf(file, "%31s", key) != 1 || strcmp(key, "TITLE") != 0 ||
+      (title = read_quoted(file)) == NULL) {
+    fprintf(stderr, "cplot: '%s' is not a supported multiplot state file.\n",
+            path);
+    goto cleanup;
+  }
+
+  size_t rows;
+  size_t columns;
+  if (fscanf(file, "%31s %zu %zu", key, &rows, &columns) != 3 ||
+      strcmp(key, "GRID") != 0) {
+    fprintf(stderr, "cplot: malformed multiplot grid in '%s'.\n", path);
+    goto cleanup;
+  }
+  multi = plot_multi_create(title, rows, columns);
+  if (multi == NULL) {
+    fprintf(stderr, "cplot: invalid grid or allocation failure in '%s'.\n",
+            path);
+    goto cleanup;
+  }
+
+  const size_t count = rows * columns;
+  for (size_t i = 0; i < count; i++) {
+    if (fscanf(file, "%31s", key) != 1) {
+      fprintf(stderr, "cplot: unexpected end of '%s'.\n", path);
+      plot_multi_destroy(multi);
+      multi = NULL;
+      goto cleanup;
+    }
+    if (strcmp(key, "EMPTY") == 0)
+      continue;
+    if (strcmp(key, "PLOT") != 0) {
+      fprintf(stderr, "cplot: unexpected cell token in '%s'.\n", path);
+      plot_multi_destroy(multi);
+      multi = NULL;
+      goto cleanup;
+    }
+    multi->plots[i] = read_plot_contents(file, "ENDPLOT", path);
+    if (multi->plots[i] == NULL) {
+      plot_multi_destroy(multi);
+      multi = NULL;
+      goto cleanup;
+    }
+  }
+
+  if (fscanf(file, "%31s", key) != 1 || strcmp(key, "END") != 0) {
+    fprintf(stderr, "cplot: missing multiplot terminator in '%s'.\n", path);
+    plot_multi_destroy(multi);
+    multi = NULL;
+  }
+
+cleanup:
+  free(title);
+  (void)fclose(file);
+  return multi;
 }

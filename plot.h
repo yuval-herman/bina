@@ -9,6 +9,7 @@ extern "C" {
 
 typedef struct Plot Plot;
 typedef struct PlotSeries PlotSeries;
+typedef struct PlotMulti PlotMulti;
 
 typedef enum {
   PLOT_LINES = 0,
@@ -48,6 +49,30 @@ int plot_refresh(Plot *plot);
 /* Saves/loads all plot metadata, series, styles, and data points. */
 int plot_save(const Plot *plot, const char *path);
 Plot *plot_load(const char *path);
+
+/*
+ * A PlotMulti owns a fixed grid of independent plots. Every cell has its own
+ * title, labels, and automatically scaled axes. Row/column indices are
+ * zero-based. Plots returned by plot_multi_add/get are owned by the grid and
+ * must not be destroyed individually.
+ */
+PlotMulti *plot_multi_create(const char *title, size_t rows, size_t columns);
+void plot_multi_destroy(PlotMulti *multi);
+Plot *plot_multi_add(PlotMulti *multi, size_t row, size_t column,
+                     const char *title, const char *x_label,
+                     const char *y_label);
+Plot *plot_multi_get(PlotMulti *multi, size_t row, size_t column);
+int plot_multi_show(PlotMulti *multi);
+/* Opens each populated subplot in its own interactive gnuplot window.
+ * All windows share the PlotMulti's single gnuplot process and use numbered
+ * windows in the active interactive terminal. Unlike multiplot mode, each
+ * window supports normal mouse zoom and terminal resize behavior.
+ * plot_multi_refresh() updates the grid and/or the individual windows shown.
+ */
+int plot_multi_show_individual(PlotMulti *multi);
+int plot_multi_refresh(PlotMulti *multi);
+int plot_multi_save(const PlotMulti *multi, const char *path);
+PlotMulti *plot_multi_load(const char *path);
 
 #ifdef __cplusplus
 }

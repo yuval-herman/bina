@@ -36,6 +36,38 @@ static void calculate_gae(NNtype discount, NNtype gae_lambda, unsigned length,
 #undef surprise
 }
 
+typedef struct {
+  NNtype score;
+  NNtype bias;
+} ExplainedVariance;
+
+static ExplainedVariance explained_variance(unsigned length, NNtype *targets,
+                                            NNtype *predictions) {
+  assert(length);
+
+  NNtype t_mean = 0;
+  NNtype tp_mean = 0;
+  NNtype t_mean_square = 0;
+  NNtype tp_mean_square = 0;
+
+  for (unsigned i = 0; i < length; i++) {
+    t_mean += targets[i];
+    tp_mean += targets[i] - predictions[i];
+  }
+  t_mean /= (NNtype)length;
+  tp_mean /= (NNtype)length;
+
+  for (unsigned i = 0; i < length; i++) {
+    const NNtype t = targets[i] - t_mean;
+    t_mean_square += t * t;
+    const NNtype tp = targets[i] - predictions[i] - tp_mean;
+    tp_mean_square += tp * tp;
+  }
+
+  return (ExplainedVariance){.score = 1 - tp_mean_square / t_mean_square,
+                             .bias = tp_mean};
+}
+
 // Calculates log probability of a Gaussian distribution
 static NNtype calculate_log_probability(NNtype action, NNtype mean,
                                         NNtype stdev) {
@@ -253,10 +285,10 @@ void init_networks_trainers(pcg32_random_t *rng, NNNetwork *policy_network,
     }
   }
   init_trainer(policy_trainer, policy_network, NN_ADAM_OPTIMIZER);
-  policy_trainer->learning_rate = 0.001f;
+  policy_trainer->learning_rate = 1e-4f;
   // policy_trainer->clip_limit = 0.1f;
-  policy_trainer->learning_rate_decay = 0.999f;
-  policy_trainer->learning_rate_min = 1e-5f;
+  // policy_trainer->learning_rate_decay = 0.999f;
+  // policy_trainer->learning_rate_min = 1e-5f;
   // policy_trainer->adam_damp = 0.999f;
   // policy_trainer->momentum_damp = 0.899f;
 
@@ -271,10 +303,10 @@ void init_networks_trainers(pcg32_random_t *rng, NNNetwork *policy_network,
   init_network_weights(value_network, rng);
 
   init_trainer(value_trainer, value_network, NN_SGD_OPTIMIZER);
-  value_trainer->learning_rate = 0.0002f;
+  value_trainer->learning_rate = 1e-4f;
   // value_trainer->clip_limit = 3.0f;
-  value_trainer->learning_rate_decay = 0.9999f;
-  value_trainer->learning_rate_min = 1e-7f;
+  // value_trainer->learning_rate_decay = 0.9999f;
+  // value_trainer->learning_rate_min = 1e-7f;
   value_trainer->loss_type = NN_MSE_LOSS;
 
   printf("policy layers = {");
@@ -322,8 +354,22 @@ double evaluate_policy(NNNetwork *network) {
   return avg_reward / episode_count;
 }
 
+// x stay the same and does not get averaged. series count is the amount of
+// series data we are averaging here.
+void add_value_to_mean_series(Plot *plot, PlotSeries *series,
+                              unsigned series_count, size_t index, double x,
+                              double y) {
+  double prev_y = plot_series_get_y(plot, series, index);
+  if (isnan(prev_y)) {
+    plot_series_add(plot, series, x, y);
+  } else {
+    prev_y = (prev_y * (series_count) + y) / (series_count + 1);
+    plot_series_set(plot, series, index, x, prev_y);
+  }
+}
+
 int main(int argc, char **argv) {
-  int live_plot = 0;
+  bool live_plot = 0;
   const char *plot_save_path = NULL;
   for (int arg = 1; arg < argc; arg++) {
     if (strcmp(argv[arg], "--plot") == 0) {
@@ -397,36 +443,45 @@ int main(int argc, char **argv) {
 
   char series_name[32];
 
-  Plot *training_plot =
-      plot_create("Pendulum training reward", "Episode", "Mean episode reward");
-  if (training_plot == NULL) {
-    fprintf(stderr, "Could not allocate training plot state.\n");
-    return 1;
-  }
+  PlotMulti *plots = plot_multi_create("Pendulum training session", 1, 2);
 
-  (void)snprintf(series_name, sizeof series_name, "Average for %lu seeds",
-                 ARR_LENGTH(last_per_seed));
-  PlotSeries *avg_series =
-      plot_add_series(training_plot, series_name, PLOT_LINESPOINTS);
-  if (avg_series == NULL) {
-    fprintf(stderr, "Could not allocate plot series.\n");
-    plot_destroy(training_plot);
-    return 1;
-  }
+  Plot *policy_plot = plot_multi_add(plots, 0, 0, "Policy reward", "Episode",
+                                     "Mean episode reward");
 
-  PlotSeries *seed_series[ARR_LENGTH(last_per_seed)] = {0};
+  Plot *value_plot = plot_multi_add(plots, 0, 1, "Value reward", "Episode",
+                                    "Mean 100 episode scores");
+
+  PlotSeries *avg_policy_series =
+      plot_add_series(policy_plot, "Average policy score", PLOT_LINESPOINTS);
+
+  PlotSeries *avg_value_series =
+      plot_add_series(value_plot, "Average value score", PLOT_LINESPOINTS);
+  PlotSeries *avg_value_bias_series =
+      plot_add_series(value_plot, "Average value bias", PLOT_LINESPOINTS);
+
+  struct {
+    PlotSeries *policy;
+    PlotSeries *value;
+    PlotSeries *value_bias;
+  } seed_series[ARR_LENGTH(last_per_seed)] = {0};
+
   for (unsigned seed = 0; seed < ARR_LENGTH(seed_series); seed++) {
-    char series_name[32];
     (void)snprintf(series_name, sizeof series_name, "Seed %u", seed);
-    seed_series[seed] =
-        plot_add_series(training_plot, series_name, PLOT_LINESPOINTS);
-    if (seed_series[seed] == NULL) {
-      fprintf(stderr, "Could not allocate plot series.\n");
-      plot_destroy(training_plot);
-      return 1;
-    }
+    seed_series[seed].policy =
+        plot_add_series(policy_plot, series_name, PLOT_LINESPOINTS);
   }
-  if (live_plot && plot_show(training_plot) != 0) {
+  for (unsigned seed = 0; seed < ARR_LENGTH(seed_series); seed++) {
+    (void)snprintf(series_name, sizeof series_name, "Seed %u score", seed);
+    seed_series[seed].value =
+        plot_add_series(value_plot, series_name, PLOT_LINESPOINTS);
+  }
+  for (unsigned seed = 0; seed < ARR_LENGTH(seed_series); seed++) {
+    (void)snprintf(series_name, sizeof series_name, "Seed %u bias", seed);
+    seed_series[seed].value_bias =
+        plot_add_series(value_plot, series_name, PLOT_LINESPOINTS);
+  }
+
+  if (live_plot && plot_multi_show(plots) != 0) {
     fprintf(stderr, "Continuing training without a live plot.\n");
     live_plot = 0;
   }
@@ -450,6 +505,8 @@ int main(int argc, char **argv) {
     NNtype episode_rewards[EPISODE_LENGTH];
     NNtype episode_returns[EPISODE_LENGTH];
     NNtype episode_advantage[EPISODE_LENGTH];
+
+    ExplainedVariance ev_avg = {0};
 
     for (unsigned episode = 0; episode < EPISODE_AMOUNT; episode++) {
       memset(episode_inputs, 0, sizeof **episode_inputs * EPISODE_LENGTH * 3);
@@ -489,6 +546,13 @@ int main(int argc, char **argv) {
 
       float discount = 0.95f;
       calculate_returns(discount, step, episode_rewards, episode_returns);
+
+      ExplainedVariance ev =
+          explained_variance(100, episode_returns, episode_values);
+
+      ev_avg.bias += ev.bias;
+      ev_avg.score += ev.score;
+
       calculate_gae(discount, 0.4f, step, episode_rewards, episode_values,
                     episode_advantage);
 
@@ -502,23 +566,26 @@ int main(int argc, char **argv) {
       if (episode % 100 == 99) {
         const double avg_reward = evaluate_policy(&policy_network);
         last_per_seed[seed] = avg_reward;
-        double prev_y =
-            plot_series_get_y(training_plot, avg_series, episode / 100);
-        if (isnan(prev_y)) {
-          if (plot_series_add(training_plot, avg_series, (double)(episode + 1),
-                              avg_reward) != 0) {
-            fprintf(stderr, "Could not append training plot data.\n");
-          }
-        } else {
-          prev_y = (prev_y * (seed + 1) + avg_reward) / (seed + 2);
-          plot_series_set(training_plot, avg_series, episode / 100,
-                          (double)(episode + 1), prev_y);
-        }
-        if (plot_series_add(training_plot, seed_series[seed],
-                            (double)(episode + 1), avg_reward) != 0) {
-          fprintf(stderr, "Could not append training plot data.\n");
-        }
-        if (live_plot && plot_refresh(training_plot) != 0) {
+
+        plot_series_add(policy_plot, seed_series[seed].policy,
+                        (double)(episode + 1), avg_reward);
+        add_value_to_mean_series(policy_plot, avg_policy_series, seed + 1,
+                                 episode / 100, episode + 1, avg_reward);
+
+        ev_avg.bias /= 100;
+        ev_avg.score /= 100;
+
+        plot_series_add(value_plot, seed_series[seed].value,
+                        (double)(episode + 1), ev_avg.score);
+        add_value_to_mean_series(value_plot, avg_value_series, seed + 1,
+                                 episode / 100, episode + 1, ev_avg.score);
+        plot_series_add(value_plot, seed_series[seed].value_bias,
+                        (double)(episode + 1), ev_avg.bias);
+        add_value_to_mean_series(value_plot, avg_value_bias_series, seed + 1,
+                                 episode / 100, episode + 1, ev_avg.bias);
+
+        ev_avg = (ExplainedVariance){0};
+        if (live_plot && plot_multi_refresh(plots) != 0) {
           fprintf(stderr,
                   "Live plotting failed; continuing without updates.\n");
           live_plot = 0;
@@ -535,14 +602,14 @@ int main(int argc, char **argv) {
 
   double overall_avg = 0;
   if (plot_save_path != NULL && plot_save_path[0] != '\0') {
-    if (plot_save(training_plot, plot_save_path) != 0) {
+    if (plot_multi_save(plots, plot_save_path) != 0) {
       fprintf(stderr, "Failed to save plot state to '%s'.\n", plot_save_path);
-      plot_destroy(training_plot);
+      plot_multi_destroy(plots);
       return 1;
     }
     printf("Saved training plot to %s\n", plot_save_path);
   }
-  plot_destroy(training_plot);
+  plot_multi_destroy(plots);
 
   printf("\n\nLast 100 episode averages per seed\nseed average\n");
   for (unsigned seed = 0; seed < ARR_LENGTH(last_per_seed); seed++) {
