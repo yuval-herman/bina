@@ -487,8 +487,9 @@ int main(int argc, char **argv) {
       feed_network(&value_network, episode_inputs[step]);
       episode_values[step] = value_network.final_output[0];
 
-      calculate_returns(0.99f, step, episode_rewards, episode_returns);
-      calculate_gae(0.9f, 0.5f, step, episode_rewards, episode_values,
+      float discount = 0.95f;
+      calculate_returns(discount, step, episode_rewards, episode_returns);
+      calculate_gae(discount, 0.4f, step, episode_rewards, episode_values,
                     episode_advantage);
 
       value_network_train_step(&value_trainer, step, &episode_inputs[0][0],
