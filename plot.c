@@ -4,8 +4,10 @@
 
 #include <ctype.h>
 #include <errno.h>
+#include <limits.h>
 #include <math.h>
 #include <stdint.h>
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -13,6 +15,7 @@
 
 #define CPLOT_TEMP_TEMPLATE "/tmp/cplot-XXXXXX"
 #define CPLOT_INITIAL_CAPACITY 16U
+#define CPLOT_ANNOTATION_LABEL_BASE 1000U
 
 typedef struct {
   double x;
@@ -32,6 +35,12 @@ struct Plot {
   char *title;
   char *x_label;
   char *y_label;
+  char *annotation;
+  double annotation_x;
+  double annotation_y;
+  PlotTextAlign annotation_align;
+  PlotAnnotationPosition annotation_position;
+  PlotLegendPosition legend_position;
   PlotSeries **series;
   size_t series_length;
   size_t series_capacity;
@@ -67,6 +76,35 @@ static int set_string(char **target, const char *value) {
   free(*target);
   *target = copy;
   return 0;
+}
+
+static void replace_string_owned(char **target, char *owned) {
+  free(*target);
+  *target = owned;
+}
+
+static char *format_string(const char *format, va_list args) {
+  if (format == NULL)
+    return NULL;
+  va_list count_args;
+  va_copy(count_args, args);
+  const int needed = vsnprintf(NULL, 0, format, count_args);
+  va_end(count_args);
+  if (needed < 0 || (uintmax_t)needed >= (uintmax_t)SIZE_MAX)
+    return NULL;
+  const size_t size = (size_t)needed + 1;
+  char *text = malloc(size);
+  if (text == NULL)
+    return NULL;
+  va_list write_args;
+  va_copy(write_args, args);
+  const int written = vsnprintf(text, size, format, write_args);
+  va_end(write_args);
+  if (written != needed) {
+    free(text);
+    return NULL;
+  }
+  return text;
 }
 
 static int owns_series(const Plot *plot, const PlotSeries *series) {
@@ -147,7 +185,14 @@ Plot *plot_create(const char *title, const char *x_label, const char *y_label) {
   plot->title = copy_string(title);
   plot->x_label = copy_string(x_label);
   plot->y_label = copy_string(y_label);
-  if (plot->title == NULL || plot->x_label == NULL || plot->y_label == NULL) {
+  plot->annotation = copy_string("");
+  plot->annotation_x = 1.05;
+  plot->annotation_y = 0.85;
+  plot->annotation_align = PLOT_TEXT_LEFT;
+  plot->annotation_position = PLOT_ANNOTATION_MANUAL;
+  plot->legend_position = PLOT_LEGEND_DEFAULT;
+  if (plot->title == NULL || plot->x_label == NULL || plot->y_label == NULL ||
+      plot->annotation == NULL) {
     plot_destroy(plot);
     return NULL;
   }
@@ -181,42 +226,66 @@ void plot_destroy(Plot *plot) {
   free(plot->title);
   free(plot->x_label);
   free(plot->y_label);
+  free(plot->annotation);
   free(plot);
 }
 
-PlotSeries *plot_add_series(Plot *plot, const char *name, PlotStyle style) {
-  if (plot == NULL || style < PLOT_LINES || style > PLOT_IMPULSES)
+static PlotSeries *plot_add_series_owned(Plot *plot, char *owned_name,
+                                         PlotStyle style) {
+  if (plot == NULL || owned_name == NULL || style < PLOT_LINES ||
+      style > PLOT_IMPULSES) {
+    free(owned_name);
     return NULL;
-  if (plot->series_length == SIZE_MAX / sizeof *plot->series)
+  }
+  if (plot->series_length == SIZE_MAX / sizeof *plot->series) {
+    free(owned_name);
     return NULL;
+  }
 
   if (plot->series_length == plot->series_capacity) {
     size_t capacity = plot->series_capacity == 0 ? 4 : plot->series_capacity;
     if (plot->series_capacity != 0) {
-      if (capacity > SIZE_MAX / 2)
+      if (capacity > SIZE_MAX / 2) {
+        free(owned_name);
         return NULL;
+      }
       capacity *= 2;
     }
-    if (capacity > SIZE_MAX / sizeof *plot->series)
+    if (capacity > SIZE_MAX / sizeof *plot->series) {
+      free(owned_name);
       return NULL;
+    }
     PlotSeries **series = realloc(plot->series, capacity * sizeof *series);
-    if (series == NULL)
+    if (series == NULL) {
+      free(owned_name);
       return NULL;
+    }
     plot->series = series;
     plot->series_capacity = capacity;
   }
 
   PlotSeries *series = calloc(1, sizeof *series);
-  if (series == NULL)
-    return NULL;
-  series->name = copy_string(name);
-  if (series->name == NULL) {
-    free(series);
+  if (series == NULL) {
+    free(owned_name);
     return NULL;
   }
+  series->name = owned_name;
   series->style = style;
   plot->series[plot->series_length++] = series;
   return series;
+}
+
+PlotSeries *plot_add_series(Plot *plot, const char *name, PlotStyle style) {
+  return plot_add_series_owned(plot, copy_string(name), style);
+}
+
+PlotSeries *plot_add_seriesf(Plot *plot, PlotStyle style,
+                             const char *format, ...) {
+  va_list args;
+  va_start(args, format);
+  char *name = format_string(format, args);
+  va_end(args);
+  return plot_add_series_owned(plot, name, style);
 }
 
 int plot_series_add(Plot *plot, PlotSeries *series, double x, double y) {
@@ -279,6 +348,128 @@ void plot_set_x_label(Plot *plot, const char *label) {
 void plot_set_y_label(Plot *plot, const char *label) {
   if (plot != NULL)
     (void)set_string(&plot->y_label, label);
+}
+
+static int set_formatted_string(char **target, const char *format,
+                                va_list args) {
+  char *formatted = format_string(format, args);
+  if (formatted == NULL)
+    return -1;
+  replace_string_owned(target, formatted);
+  return 0;
+}
+
+int plot_set_titlef(Plot *plot, const char *format, ...) {
+  if (plot == NULL)
+    return -1;
+  va_list args;
+  va_start(args, format);
+  const int result = set_formatted_string(&plot->title, format, args);
+  va_end(args);
+  return result;
+}
+
+int plot_set_x_labelf(Plot *plot, const char *format, ...) {
+  if (plot == NULL)
+    return -1;
+  va_list args;
+  va_start(args, format);
+  const int result = set_formatted_string(&plot->x_label, format, args);
+  va_end(args);
+  return result;
+}
+
+int plot_set_y_labelf(Plot *plot, const char *format, ...) {
+  if (plot == NULL)
+    return -1;
+  va_list args;
+  va_start(args, format);
+  const int result = set_formatted_string(&plot->y_label, format, args);
+  va_end(args);
+  return result;
+}
+
+static int set_annotation_owned(Plot *plot, char *owned_text) {
+  if (plot == NULL || owned_text == NULL) {
+    free(owned_text);
+    return -1;
+  }
+  replace_string_owned(&plot->annotation, owned_text);
+  return 0;
+}
+
+int plot_set_annotation(Plot *plot, const char *text, double x, double y,
+                        PlotTextAlign align) {
+  if (plot == NULL || !isfinite(x) || !isfinite(y) ||
+      align < PLOT_TEXT_LEFT || align > PLOT_TEXT_RIGHT)
+    return -1;
+  char *copy = copy_string(text);
+  if (copy == NULL)
+    return -1;
+  replace_string_owned(&plot->annotation, copy);
+  plot->annotation_x = x;
+  plot->annotation_y = y;
+  plot->annotation_align = align;
+  plot->annotation_position = PLOT_ANNOTATION_MANUAL;
+  return 0;
+}
+
+int plot_set_annotation_atf(Plot *plot, double x, double y,
+                            PlotTextAlign align, const char *format, ...) {
+  if (plot == NULL || !isfinite(x) || !isfinite(y) ||
+      align < PLOT_TEXT_LEFT || align > PLOT_TEXT_RIGHT)
+    return -1;
+  va_list args;
+  va_start(args, format);
+  char *text = format_string(format, args);
+  va_end(args);
+  if (text == NULL)
+    return -1;
+  replace_string_owned(&plot->annotation, text);
+  plot->annotation_x = x;
+  plot->annotation_y = y;
+  plot->annotation_align = align;
+  plot->annotation_position = PLOT_ANNOTATION_MANUAL;
+  return 0;
+}
+
+int plot_set_annotation_position(Plot *plot, const char *text,
+                                 PlotAnnotationPosition position) {
+  if (plot == NULL || position <= PLOT_ANNOTATION_MANUAL ||
+      position > PLOT_ANNOTATION_BELOW_RIGHT)
+    return -1;
+  char *copy = copy_string(text);
+  if (copy == NULL)
+    return -1;
+  if (set_annotation_owned(plot, copy) != 0)
+    return -1;
+  plot->annotation_position = position;
+  return 0;
+}
+
+int plot_set_annotationf(Plot *plot, PlotAnnotationPosition position,
+                         const char *format, ...) {
+  if (plot == NULL || position <= PLOT_ANNOTATION_MANUAL ||
+      position > PLOT_ANNOTATION_BELOW_RIGHT)
+    return -1;
+  va_list args;
+  va_start(args, format);
+  char *text = format_string(format, args);
+  va_end(args);
+  if (text == NULL)
+    return -1;
+  if (set_annotation_owned(plot, text) != 0)
+    return -1;
+  plot->annotation_position = position;
+  return 0;
+}
+
+int plot_set_legend_position(Plot *plot, PlotLegendPosition position) {
+  if (plot == NULL || position < PLOT_LEGEND_DEFAULT ||
+      position > PLOT_LEGEND_OUTSIDE_BOTTOM)
+    return -1;
+  plot->legend_position = position;
+  return 0;
 }
 
 static int ensure_data_path(PlotSeries *series) {
@@ -357,6 +548,36 @@ static int write_gp_quoted(FILE *file, const char *value) {
   return write_quoted(file, value);
 }
 
+static int write_gp_quoted_span(FILE *file, const char *value, size_t length) {
+  if (fputc('"', file) == EOF)
+    return -1;
+  for (size_t i = 0; i < length; i++) {
+    switch ((unsigned char)value[i]) {
+    case '\\':
+      if (fputs("\\\\", file) == EOF)
+        return -1;
+      break;
+    case '"':
+      if (fputs("\\\"", file) == EOF)
+        return -1;
+      break;
+    case '\r':
+      if (fputs("\\r", file) == EOF)
+        return -1;
+      break;
+    case '\t':
+      if (fputs("\\t", file) == EOF)
+        return -1;
+      break;
+    default:
+      if (fputc((unsigned char)value[i], file) == EOF)
+        return -1;
+      break;
+    }
+  }
+  return fputc('"', file) == EOF ? -1 : 0;
+}
+
 static const char *gnuplot_style(PlotStyle style) {
   switch (style) {
   case PLOT_POINTS:
@@ -371,6 +592,373 @@ static const char *gnuplot_style(PlotStyle style) {
   }
 }
 
+static size_t annotation_line_count(const char *text) {
+  if (text == NULL || text[0] == '\0')
+    return 0;
+  size_t lines = 1;
+  for (const char *p = text; *p != '\0'; p++) {
+    if (*p == '\n' && p[1] != '\0')
+      lines++;
+  }
+  return lines;
+}
+
+static size_t annotation_max_line_length(const char *text) {
+  size_t longest = 0;
+  size_t current = 0;
+  if (text == NULL)
+    return 0;
+  for (const char *p = text;; p++) {
+    if (*p == '\n' || *p == '\0') {
+      if (current > longest)
+        longest = current;
+      current = 0;
+      if (*p == '\0')
+        break;
+    } else if (current < SIZE_MAX) {
+      /* Byte length deliberately overestimates some UTF-8 glyph widths. */
+      current++;
+    }
+  }
+  return longest;
+}
+
+static size_t visible_legend_entries(const Plot *plot) {
+  size_t count = 0;
+  for (size_t i = 0; i < plot->series_length; i++) {
+    if (plot->series[i]->name[0] != '\0')
+      count++;
+  }
+  return count;
+}
+
+static size_t legend_max_name_length(const Plot *plot) {
+  size_t longest = 0;
+  for (size_t i = 0; i < plot->series_length; i++) {
+    const size_t length = strlen(plot->series[i]->name);
+    if (length > longest)
+      longest = length;
+  }
+  return longest;
+}
+
+static size_t capped_add(size_t a, size_t b) {
+  return b > SIZE_MAX - a ? SIZE_MAX : a + b;
+}
+
+static size_t estimated_horizontal_legend_rows(const Plot *plot) {
+  const size_t entries = visible_legend_entries(plot);
+  if (entries == 0)
+    return 0;
+  size_t estimated_width = 0;
+  for (size_t i = 0; i < plot->series_length; i++) {
+    if (plot->series[i]->name[0] == '\0')
+      continue;
+    estimated_width = capped_add(estimated_width,
+                                  capped_add(strlen(plot->series[i]->name), 7));
+  }
+  /* The terminal width is only known to gnuplot. This conservative estimate
+   * reserves space for ordinary key wrapping; very narrow windows may wrap
+   * the key further. */
+  const size_t rows = estimated_width > SIZE_MAX - 44
+                          ? entries
+                          : (estimated_width + 44) / 45;
+  return rows < 1 ? 1 : (rows > entries ? entries : rows);
+}
+
+static size_t plot_margin_for_width(size_t width) {
+  const size_t margin = capped_add(width, 7);
+  return margin > (size_t)INT_MAX ? (size_t)INT_MAX : margin;
+}
+
+static size_t plot_margin_for_height(size_t lines) {
+  /* Leave room for line-height, a small gap, and terminal font metrics. */
+  const size_t line_space = lines > (SIZE_MAX - 4) / 2 ? SIZE_MAX : lines * 2;
+  const size_t margin = capped_add(line_space, 3);
+  return margin > (size_t)INT_MAX ? (size_t)INT_MAX : margin;
+}
+
+static PlotLegendPosition effective_legend_position(const Plot *plot,
+                                                    int key_outside) {
+  PlotLegendPosition position = plot->legend_position;
+  if (position == PLOT_LEGEND_DEFAULT)
+    position = key_outside ? PLOT_LEGEND_OUTSIDE_RIGHT
+                           : PLOT_LEGEND_TOP_RIGHT;
+  if (plot->annotation != NULL && plot->annotation[0] != '\0' &&
+      plot->annotation_position == PLOT_ANNOTATION_RIGHT_BELOW_LEGEND &&
+      position != PLOT_LEGEND_HIDDEN)
+    position = PLOT_LEGEND_OUTSIDE_RIGHT;
+  if (plot->annotation != NULL && plot->annotation[0] != '\0' &&
+      plot->annotation_position == PLOT_ANNOTATION_LEFT_BELOW_LEGEND &&
+      position != PLOT_LEGEND_HIDDEN)
+    position = PLOT_LEGEND_OUTSIDE_LEFT;
+  return position;
+}
+
+static PlotAnnotationPosition effective_annotation_position(
+    const Plot *plot, int key_outside) {
+  PlotAnnotationPosition position = plot->annotation_position;
+  const PlotLegendPosition legend = effective_legend_position(plot, key_outside);
+  if (legend == PLOT_LEGEND_HIDDEN) {
+    if (position == PLOT_ANNOTATION_RIGHT_BELOW_LEGEND)
+      return PLOT_ANNOTATION_RIGHT_BOTTOM;
+    if (position == PLOT_ANNOTATION_LEFT_BELOW_LEGEND)
+      return PLOT_ANNOTATION_LEFT_BOTTOM;
+  }
+  return position;
+}
+
+static int write_legend_commands(FILE *out, const Plot *plot,
+                                 int key_outside) {
+  if (plot->series_length == 0 ||
+      plot->legend_position == PLOT_LEGEND_HIDDEN) {
+    return fprintf(out, "unset key\n") < 0 ? -1 : 0;
+  }
+  switch (effective_legend_position(plot, key_outside)) {
+  case PLOT_LEGEND_HIDDEN:
+    return fprintf(out, "unset key\n") < 0 ? -1 : 0;
+  case PLOT_LEGEND_TOP_LEFT:
+    return fprintf(out, "set key top left\n") < 0 ? -1 : 0;
+  case PLOT_LEGEND_BOTTOM_RIGHT:
+    return fprintf(out, "set key bottom right\n") < 0 ? -1 : 0;
+  case PLOT_LEGEND_BOTTOM_LEFT:
+    return fprintf(out, "set key bottom left\n") < 0 ? -1 : 0;
+  case PLOT_LEGEND_OUTSIDE_RIGHT:
+    return fprintf(out, "set key outside right top vertical\n") < 0 ? -1 : 0;
+  case PLOT_LEGEND_OUTSIDE_LEFT:
+    return fprintf(out, "set key outside left top vertical\n") < 0 ? -1 : 0;
+  case PLOT_LEGEND_OUTSIDE_TOP:
+    return fprintf(out, "set key outside top center horizontal\n") < 0 ? -1 : 0;
+  case PLOT_LEGEND_OUTSIDE_BOTTOM:
+    return fprintf(out, "set key outside bottom center horizontal\n") < 0 ? -1 : 0;
+  case PLOT_LEGEND_DEFAULT:
+    break;
+  case PLOT_LEGEND_TOP_RIGHT:
+  default:
+    return fprintf(out, "set key top right\n") < 0 ? -1 : 0;
+  }
+  return -1;
+}
+
+static int write_annotation_margin_commands(FILE *out, const Plot *plot,
+                                            int key_outside) {
+  if (fprintf(out, "set lmargin -1\nset rmargin -1\n"
+                   "set tmargin -1\nset bmargin -1\n") < 0)
+    return -1;
+  if (plot->annotation == NULL || plot->annotation[0] == '\0')
+    return 0;
+
+  const size_t line_count = annotation_line_count(plot->annotation);
+  const size_t text_width = annotation_max_line_length(plot->annotation);
+  const PlotLegendPosition legend = effective_legend_position(plot, key_outside);
+  const PlotAnnotationPosition annotation_position =
+      effective_annotation_position(plot, key_outside);
+  const int legend_right = legend == PLOT_LEGEND_OUTSIDE_RIGHT;
+  const int legend_left = legend == PLOT_LEGEND_OUTSIDE_LEFT;
+  const int legend_top = legend == PLOT_LEGEND_OUTSIDE_TOP;
+  const int legend_bottom = legend == PLOT_LEGEND_OUTSIDE_BOTTOM;
+  const size_t horizontal_legend_rows =
+      (legend_top || legend_bottom) ? estimated_horizontal_legend_rows(plot) : 0;
+  size_t margin;
+
+  switch (annotation_position) {
+  case PLOT_ANNOTATION_RIGHT_BOTTOM:
+  case PLOT_ANNOTATION_RIGHT_BELOW_LEGEND:
+    margin = text_width;
+    if (legend_right) {
+      const size_t key_width = legend_max_name_length(plot);
+      if (key_width > margin)
+        margin = key_width;
+    }
+    margin = plot_margin_for_width(margin);
+    return fprintf(out, "set rmargin %zu\n", margin) < 0 ? -1 : 0;
+  case PLOT_ANNOTATION_LEFT_BOTTOM:
+  case PLOT_ANNOTATION_LEFT_BELOW_LEGEND:
+    margin = text_width;
+    if (legend_left) {
+      const size_t key_width = legend_max_name_length(plot);
+      if (key_width > margin)
+        margin = key_width;
+    }
+    margin = plot_margin_for_width(margin);
+    return fprintf(out, "set lmargin %zu\n", margin) < 0 ? -1 : 0;
+  case PLOT_ANNOTATION_ABOVE_LEFT:
+  case PLOT_ANNOTATION_ABOVE_CENTER:
+  case PLOT_ANNOTATION_ABOVE_RIGHT:
+    margin = plot_margin_for_height(line_count);
+    if (legend_top)
+      margin = capped_add(margin, capped_add(2, capped_add(horizontal_legend_rows, horizontal_legend_rows)));
+    if (margin > (size_t)INT_MAX)
+      margin = (size_t)INT_MAX;
+    return fprintf(out, "set tmargin %zu\n", margin) < 0 ? -1 : 0;
+  case PLOT_ANNOTATION_BELOW_LEFT:
+  case PLOT_ANNOTATION_BELOW_CENTER:
+  case PLOT_ANNOTATION_BELOW_RIGHT:
+    margin = plot_margin_for_height(line_count);
+    if (legend_bottom)
+      margin = capped_add(margin, capped_add(2, capped_add(horizontal_legend_rows, horizontal_legend_rows)));
+    if (margin > (size_t)INT_MAX)
+      margin = (size_t)INT_MAX;
+    return fprintf(out, "set bmargin %zu\n", margin) < 0 ? -1 : 0;
+  case PLOT_ANNOTATION_MANUAL:
+    if (plot->annotation_x > 1.0) {
+      margin = plot_margin_for_width(text_width);
+      if (legend_right && legend_max_name_length(plot) > text_width)
+        margin = plot_margin_for_width(legend_max_name_length(plot));
+      return fprintf(out, "set rmargin %zu\n", margin) < 0 ? -1 : 0;
+    }
+    if (plot->annotation_x < 0.0) {
+      margin = plot_margin_for_width(text_width);
+      if (legend_left && legend_max_name_length(plot) > text_width)
+        margin = plot_margin_for_width(legend_max_name_length(plot));
+      return fprintf(out, "set lmargin %zu\n", margin) < 0 ? -1 : 0;
+    }
+    if (plot->annotation_y > 1.0) {
+      margin = plot_margin_for_height(line_count);
+      return fprintf(out, "set tmargin %zu\n", margin) < 0 ? -1 : 0;
+    }
+    if (plot->annotation_y < 0.0) {
+      margin = plot_margin_for_height(line_count);
+      return fprintf(out, "set bmargin %zu\n", margin) < 0 ? -1 : 0;
+    }
+    return 0;
+  }
+  return 0;
+}
+
+static int write_annotation_commands(FILE *out, const Plot *plot,
+                                     int key_outside) {
+  if (fprintf(out, "unset label\n") < 0 ||
+      write_annotation_margin_commands(out, plot, key_outside) != 0)
+    return -1;
+  if (plot->annotation == NULL || plot->annotation[0] == '\0')
+    return 0;
+
+  const char *line_start = plot->annotation;
+  const size_t line_count = annotation_line_count(plot->annotation);
+  const size_t key_count = effective_legend_position(plot, key_outside) ==
+                                   PLOT_LEGEND_HIDDEN
+                               ? 0
+                               : visible_legend_entries(plot);
+  const PlotAnnotationPosition annotation_position =
+      effective_annotation_position(plot, key_outside);
+  const PlotLegendPosition legend_position =
+      effective_legend_position(plot, key_outside);
+  const size_t horizontal_legend_rows =
+      (legend_position == PLOT_LEGEND_OUTSIDE_TOP ||
+       legend_position == PLOT_LEGEND_OUTSIDE_BOTTOM)
+          ? estimated_horizontal_legend_rows(plot)
+          : 0;
+  size_t line_number = 0;
+  for (const char *cursor = plot->annotation;; cursor++) {
+    if (*cursor != '\n' && *cursor != '\0')
+      continue;
+
+    if (*cursor == '\0' && cursor == line_start && line_number != 0)
+      break;
+    if (line_number > (size_t)INT_MAX - CPLOT_ANNOTATION_LABEL_BASE)
+      return -1;
+
+    const size_t text_length = (size_t)(cursor - line_start);
+    const char *align = "left";
+    const char *coordinates = "graph";
+    double x = plot->annotation_x;
+    double y = plot->annotation_y;
+    double offset_x = 0.0;
+    double offset_y = 0.0;
+    int use_offset = 0;
+
+    switch (annotation_position) {
+    case PLOT_ANNOTATION_MANUAL:
+      align = plot->annotation_align == PLOT_TEXT_CENTER
+                  ? "center"
+                  : (plot->annotation_align == PLOT_TEXT_RIGHT ? "right" : "left");
+      offset_y = -1.2 * (double)line_number;
+      use_offset = line_number != 0;
+      break;
+    case PLOT_ANNOTATION_RIGHT_BOTTOM:
+      x = 1.0;
+      y = 0.0;
+      offset_x = 2.0;
+      offset_y = 1.2 * (double)(line_count - 1 - line_number);
+      use_offset = 1;
+      break;
+    case PLOT_ANNOTATION_RIGHT_BELOW_LEGEND:
+      x = 1.0;
+      y = 1.0;
+      offset_x = 2.0;
+      offset_y = -((double)key_count + 1.5 + 1.2 * (double)line_number);
+      use_offset = 1;
+      break;
+    case PLOT_ANNOTATION_LEFT_BOTTOM:
+      x = 0.0;
+      y = 0.0;
+      align = "right";
+      offset_x = -2.0;
+      offset_y = 1.2 * (double)(line_count - 1 - line_number);
+      use_offset = 1;
+      break;
+    case PLOT_ANNOTATION_LEFT_BELOW_LEGEND:
+      x = 0.0;
+      y = 1.0;
+      align = "right";
+      offset_x = -2.0;
+      offset_y = -((double)key_count + 1.5 + 1.2 * (double)line_number);
+      use_offset = 1;
+      break;
+    case PLOT_ANNOTATION_ABOVE_LEFT:
+    case PLOT_ANNOTATION_ABOVE_CENTER:
+    case PLOT_ANNOTATION_ABOVE_RIGHT:
+      x = annotation_position == PLOT_ANNOTATION_ABOVE_LEFT
+              ? 0.0
+              : (annotation_position == PLOT_ANNOTATION_ABOVE_RIGHT ? 1.0 : 0.5);
+      y = 1.0;
+      align = annotation_position == PLOT_ANNOTATION_ABOVE_CENTER
+                  ? "center"
+                  : (annotation_position == PLOT_ANNOTATION_ABOVE_RIGHT ? "right" : "left");
+      offset_y = 1.5 + 1.2 * (double)(line_count - 1 - line_number) +
+                 (legend_position == PLOT_LEGEND_OUTSIDE_TOP
+                      ? 1.2 * (double)horizontal_legend_rows
+                      : 0.0);
+      use_offset = 1;
+      break;
+    case PLOT_ANNOTATION_BELOW_LEFT:
+    case PLOT_ANNOTATION_BELOW_CENTER:
+    case PLOT_ANNOTATION_BELOW_RIGHT:
+      x = annotation_position == PLOT_ANNOTATION_BELOW_LEFT
+              ? 0.0
+              : (annotation_position == PLOT_ANNOTATION_BELOW_RIGHT ? 1.0 : 0.5);
+      y = 0.0;
+      align = annotation_position == PLOT_ANNOTATION_BELOW_CENTER
+                  ? "center"
+                  : (annotation_position == PLOT_ANNOTATION_BELOW_RIGHT ? "right" : "left");
+      offset_y = -1.5 - 1.2 * (double)line_number -
+                 (legend_position == PLOT_LEGEND_OUTSIDE_BOTTOM
+                      ? 1.2 * (double)horizontal_legend_rows
+                      : 0.0);
+      use_offset = 1;
+      break;
+    }
+
+    if (fprintf(out, "set label %zu ",
+                (size_t)CPLOT_ANNOTATION_LABEL_BASE + line_number) < 0 ||
+        write_gp_quoted_span(out, line_start, text_length) != 0 ||
+        fprintf(out, " at %s %.17g, %.17g %s", coordinates, x, y, align) < 0)
+      return -1;
+    if (use_offset &&
+        fprintf(out, " offset character %.3f, %.3f", offset_x, offset_y) < 0)
+      return -1;
+    if (fprintf(out, " front noenhanced\n") < 0)
+      return -1;
+
+    line_number++;
+    if (*cursor == '\0')
+      break;
+    line_start = cursor + 1;
+  }
+  return 0;
+}
+
 static int send_plot_commands_to(FILE *out, const Plot *plot,
                                  int key_outside) {
   if (fprintf(out, "set title ") < 0 ||
@@ -382,14 +970,17 @@ static int send_plot_commands_to(FILE *out, const Plot *plot,
       fprintf(out, "\nset grid\n") < 0)
     return -1;
 
+  if (write_annotation_commands(out, plot, key_outside) != 0 ||
+      write_legend_commands(out, plot, key_outside) != 0)
+    return -1;
+
   if (plot->series_length == 0) {
-    if (fprintf(out, "unset key\nplot NaN notitle\n") < 0)
+    if (fprintf(out, "plot NaN notitle\n") < 0)
       return -1;
     return 0;
   }
 
-  if (fprintf(out, "set key %s\nplot ",
-              key_outside ? "outside" : "top right") < 0)
+  if (fprintf(out, "plot ") < 0)
     return -1;
   for (size_t i = 0; i < plot->series_length; i++) {
     const PlotSeries *series = plot->series[i];
@@ -411,12 +1002,6 @@ static int send_plot_commands_to(FILE *out, const Plot *plot,
   return fprintf(out, "\n") < 0 ? -1 : 0;
 }
 
-/*
- * Qt and X11 preserve the plot's original aspect ratio when a window is
- * resized unless replotonresize is enabled. Set it only on terminals that
- * support that option. Each Plot process gets its own terminal context, so
- * this also ensures that a resize uses that plot's current data and ranges.
- */
 static int send_single_terminal_setup(FILE *out, const Plot *plot) {
   if (fprintf(out,
               "set macros\n"
@@ -633,6 +1218,21 @@ PlotMulti *plot_multi_create(const char *title, size_t rows, size_t columns) {
   return multi;
 }
 
+void plot_multi_set_title(PlotMulti *multi, const char *title) {
+  if (multi != NULL)
+    (void)set_string(&multi->title, title);
+}
+
+int plot_multi_set_titlef(PlotMulti *multi, const char *format, ...) {
+  if (multi == NULL)
+    return -1;
+  va_list args;
+  va_start(args, format);
+  const int result = set_formatted_string(&multi->title, format, args);
+  va_end(args);
+  return result;
+}
+
 void plot_multi_destroy(PlotMulti *multi) {
   if (multi == NULL)
     return;
@@ -802,7 +1402,13 @@ static int write_plot_contents(FILE *file, const Plot *plot,
       fprintf(file, "\nXLABEL ") < 0 ||
       write_quoted(file, plot->x_label) != 0 ||
       fprintf(file, "\nYLABEL ") < 0 ||
-      write_quoted(file, plot->y_label) != 0 || fputc('\n', file) == EOF)
+      write_quoted(file, plot->y_label) != 0 ||
+      fprintf(file, "\nANNOTATION %.17g %.17g %u ", plot->annotation_x,
+              plot->annotation_y, (unsigned)plot->annotation_align) < 0 ||
+      write_quoted(file, plot->annotation) != 0 ||
+      fprintf(file, "\nANNOTATION_POSITION %u\nLEGEND_POSITION %u\n",
+              (unsigned)plot->annotation_position,
+              (unsigned)plot->legend_position) < 0)
     return -1;
 
   for (size_t i = 0; i < plot->series_length; i++) {
@@ -829,7 +1435,7 @@ int plot_save(const Plot *plot, const char *path) {
     fprintf(stderr, "cplot: cannot save '%s': %s\n", path, strerror(errno));
     return -1;
   }
-  int failed = fprintf(file, "CPLOT 1\n") < 0 ||
+  int failed = fprintf(file, "CPLOT 3\n") < 0 ||
                write_plot_contents(file, plot, "END") != 0;
   if (fclose(file) != 0)
     failed = 1;
@@ -847,7 +1453,7 @@ int plot_multi_save(const PlotMulti *multi, const char *path) {
     return -1;
   }
 
-  int failed = fprintf(file, "CPLOTMULTI 1\nTITLE ") < 0 ||
+  int failed = fprintf(file, "CPLOTMULTI 3\nTITLE ") < 0 ||
                write_quoted(file, multi->title) != 0 ||
                fprintf(file, "\nGRID %zu %zu\n", multi->rows,
                        multi->columns) < 0;
@@ -958,12 +1564,24 @@ static Plot *read_plot_contents(FILE *file, const char *terminator,
   char *y_label = NULL;
   Plot *plot = NULL;
 
-  if (fscanf(file, "%31s", key) != 1 || strcmp(key, "TITLE") != 0 ||
-      (title = read_quoted(file)) == NULL ||
-      fscanf(file, "%31s", key) != 1 || strcmp(key, "XLABEL") != 0 ||
-      (x_label = read_quoted(file)) == NULL ||
-      fscanf(file, "%31s", key) != 1 || strcmp(key, "YLABEL") != 0 ||
-      (y_label = read_quoted(file)) == NULL) {
+  if (fscanf(file, "%31s", key) != 1 || strcmp(key, "TITLE") != 0) {
+    fprintf(stderr, "cplot: malformed plot metadata in '%s'.\n", path);
+    goto cleanup;
+  }
+  title = read_quoted(file);
+  if (title == NULL || fscanf(file, "%31s", key) != 1 ||
+      strcmp(key, "XLABEL") != 0) {
+    fprintf(stderr, "cplot: malformed plot metadata in '%s'.\n", path);
+    goto cleanup;
+  }
+  x_label = read_quoted(file);
+  if (x_label == NULL || fscanf(file, "%31s", key) != 1 ||
+      strcmp(key, "YLABEL") != 0) {
+    fprintf(stderr, "cplot: malformed plot metadata in '%s'.\n", path);
+    goto cleanup;
+  }
+  y_label = read_quoted(file);
+  if (y_label == NULL) {
     fprintf(stderr, "cplot: malformed plot metadata in '%s'.\n", path);
     goto cleanup;
   }
@@ -981,6 +1599,49 @@ static Plot *read_plot_contents(FILE *file, const char *terminator,
     }
     if (strcmp(key, terminator) == 0)
       break;
+    if (strcmp(key, "ANNOTATION_POSITION") == 0) {
+      unsigned position_value;
+      if (fscanf(file, "%u", &position_value) != 1 ||
+          position_value > (unsigned)PLOT_ANNOTATION_BELOW_RIGHT) {
+        fprintf(stderr, "cplot: malformed annotation position in '%s'.\n", path);
+        plot_destroy(plot);
+        plot = NULL;
+        goto cleanup;
+      }
+      plot->annotation_position = (PlotAnnotationPosition)position_value;
+      continue;
+    }
+    if (strcmp(key, "LEGEND_POSITION") == 0) {
+      unsigned position_value;
+      if (fscanf(file, "%u", &position_value) != 1 ||
+          position_value > (unsigned)PLOT_LEGEND_OUTSIDE_BOTTOM) {
+        fprintf(stderr, "cplot: malformed legend position in '%s'.\n", path);
+        plot_destroy(plot);
+        plot = NULL;
+        goto cleanup;
+      }
+      plot->legend_position = (PlotLegendPosition)position_value;
+      continue;
+    }
+    if (strcmp(key, "ANNOTATION") == 0) {
+      double x;
+      double y;
+      unsigned align_value;
+      char *text = NULL;
+      if (fscanf(file, "%lf %lf %u", &x, &y, &align_value) != 3 ||
+          align_value > (unsigned)PLOT_TEXT_RIGHT ||
+          (text = read_quoted(file)) == NULL ||
+          plot_set_annotation(plot, text, x, y, (PlotTextAlign)align_value) !=
+              0) {
+        free(text);
+        fprintf(stderr, "cplot: malformed annotation in '%s'.\n", path);
+        plot_destroy(plot);
+        plot = NULL;
+        goto cleanup;
+      }
+      free(text);
+      continue;
+    }
     if (strcmp(key, "SERIES") != 0) {
       fprintf(stderr, "cplot: unexpected token in '%s'.\n", path);
       plot_destroy(plot);
@@ -1038,7 +1699,7 @@ Plot *plot_load(const char *path) {
   char magic[16];
   unsigned version;
   if (fscanf(file, "%15s %u", magic, &version) != 2 ||
-      strcmp(magic, "CPLOT") != 0 || version != 1) {
+      strcmp(magic, "CPLOT") != 0 || (version != 1 && version != 2 && version != 3)) {
     fprintf(stderr, "cplot: '%s' is not a supported cplot state file.\n", path);
     (void)fclose(file);
     return NULL;
@@ -1064,7 +1725,7 @@ PlotMulti *plot_multi_load(const char *path) {
   char *title = NULL;
   PlotMulti *multi = NULL;
   if (fscanf(file, "%15s %u", magic, &version) != 2 ||
-      strcmp(magic, "CPLOTMULTI") != 0 || version != 1 ||
+      strcmp(magic, "CPLOTMULTI") != 0 || (version != 1 && version != 2 && version != 3) ||
       fscanf(file, "%31s", key) != 1 || strcmp(key, "TITLE") != 0 ||
       (title = read_quoted(file)) == NULL) {
     fprintf(stderr, "cplot: '%s' is not a supported multiplot state file.\n",

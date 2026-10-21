@@ -441,23 +441,24 @@ int main(int argc, char **argv) {
   pcg32_random_t rng;
   double last_per_seed[6] = {0};
 
-  char series_name[32];
-
-  PlotMulti *plots = plot_multi_create("Pendulum training session", 1, 2);
+  PlotMulti *plots = plot_multi_create("Pendulum training session", 2, 2);
 
   Plot *policy_plot = plot_multi_add(plots, 0, 0, "Policy reward", "Episode",
                                      "Mean episode reward");
 
-  Plot *value_plot = plot_multi_add(plots, 0, 1, "Value reward", "Episode",
-                                    "Mean 100 episode scores");
+  Plot *value_score_plot = plot_multi_add(plots, 1, 0, "Value score", "Episode",
+                                          "Mean 100 episode scores");
+
+  Plot *value_bias_plot = plot_multi_add(plots, 1, 1, "Value bias", "Episode",
+                                         "Mean 100 episode biases");
 
   PlotSeries *avg_policy_series =
       plot_add_series(policy_plot, "Average policy score", PLOT_LINESPOINTS);
 
-  PlotSeries *avg_value_series =
-      plot_add_series(value_plot, "Average value score", PLOT_LINESPOINTS);
+  PlotSeries *avg_value_series = plot_add_series(
+      value_score_plot, "Average value score", PLOT_LINESPOINTS);
   PlotSeries *avg_value_bias_series =
-      plot_add_series(value_plot, "Average value bias", PLOT_LINESPOINTS);
+      plot_add_series(value_bias_plot, "Average value bias", PLOT_LINESPOINTS);
 
   struct {
     PlotSeries *policy;
@@ -466,19 +467,16 @@ int main(int argc, char **argv) {
   } seed_series[ARR_LENGTH(last_per_seed)] = {0};
 
   for (unsigned seed = 0; seed < ARR_LENGTH(seed_series); seed++) {
-    (void)snprintf(series_name, sizeof series_name, "Seed %u", seed);
     seed_series[seed].policy =
-        plot_add_series(policy_plot, series_name, PLOT_LINESPOINTS);
+        plot_add_seriesf(policy_plot, PLOT_LINESPOINTS, "Seed %u", seed);
   }
   for (unsigned seed = 0; seed < ARR_LENGTH(seed_series); seed++) {
-    (void)snprintf(series_name, sizeof series_name, "Seed %u score", seed);
-    seed_series[seed].value =
-        plot_add_series(value_plot, series_name, PLOT_LINESPOINTS);
+    seed_series[seed].value = plot_add_seriesf(
+        value_score_plot, PLOT_LINESPOINTS, "Seed %u score", seed);
   }
   for (unsigned seed = 0; seed < ARR_LENGTH(seed_series); seed++) {
-    (void)snprintf(series_name, sizeof series_name, "Seed %u bias", seed);
-    seed_series[seed].value_bias =
-        plot_add_series(value_plot, series_name, PLOT_LINESPOINTS);
+    seed_series[seed].value_bias = plot_add_seriesf(
+        value_bias_plot, PLOT_LINESPOINTS, "Seed %u bias", seed);
   }
 
   if (live_plot && plot_multi_show(plots) != 0) {
@@ -496,6 +494,12 @@ int main(int argc, char **argv) {
 
     init_networks_trainers(&rng, &policy_network, &value_network,
                            &policy_trainer, &value_trainer);
+
+    plot_set_annotationf(policy_plot, PLOT_ANNOTATION_RIGHT_BOTTOM,
+                         "LR: %g\nLR decay %g\nMin LR %g",
+                         (double)policy_trainer.learning_rate,
+                         (double)policy_trainer.learning_rate_decay,
+                         (double)policy_trainer.learning_rate_min);
 
 #define EPISODE_AMOUNT 6000
 #define EPISODE_LENGTH 200
@@ -575,14 +579,15 @@ int main(int argc, char **argv) {
         ev_avg.bias /= 100;
         ev_avg.score /= 100;
 
-        plot_series_add(value_plot, seed_series[seed].value,
+        plot_series_add(value_score_plot, seed_series[seed].value,
                         (double)(episode + 1), ev_avg.score);
-        add_value_to_mean_series(value_plot, avg_value_series, seed + 1,
+        add_value_to_mean_series(value_score_plot, avg_value_series, seed + 1,
                                  episode / 100, episode + 1, ev_avg.score);
-        plot_series_add(value_plot, seed_series[seed].value_bias,
+        plot_series_add(value_bias_plot, seed_series[seed].value_bias,
                         (double)(episode + 1), ev_avg.bias);
-        add_value_to_mean_series(value_plot, avg_value_bias_series, seed + 1,
-                                 episode / 100, episode + 1, ev_avg.bias);
+        add_value_to_mean_series(value_bias_plot, avg_value_bias_series,
+                                 seed + 1, episode / 100, episode + 1,
+                                 ev_avg.bias);
 
         ev_avg = (ExplainedVariance){0};
         if (live_plot && plot_multi_refresh(plots) != 0) {
